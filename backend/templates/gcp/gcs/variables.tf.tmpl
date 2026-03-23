@@ -1,0 +1,17 @@
+variable "project_id" {
+  description = "The GCP project ID."
+  type        = string
+  default     = "{{ .ProjectID }}"
+}
+
+variable "bucket_name" {
+  description = "The name of the GCS bucket."
+  type        = string
+  default     = "{{ .BucketName }}"
+}
+
+variable "location" {
+  description = "The location for the bucket."
+  type        = string
+  default     = "{{ .Location }}"
+}

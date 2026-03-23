@@ -1,0 +1,17 @@
+variable "project_id" {
+  description = "The GCP project ID."
+  type        = string
+  default     = "{{ .ProjectID }}"
+}
+
+variable "lb_name" {
+  description = "The name of the load balancer."
+  type        = string
+  default     = "{{ .LBName }}"
+}
+
+variable "region" {
+  description = "The region for the load balancer."
+  type        = string
+  default     = "{{ .Region }}"
+}

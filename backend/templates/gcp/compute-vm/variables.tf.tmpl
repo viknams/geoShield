@@ -1,0 +1,17 @@
+variable "project_id" {
+  description = "The GCP project ID."
+  type        = string
+  default     = "{{ .ProjectID }}"
+}
+
+variable "instance_name" {
+  description = "The name of the instance."
+  type        = string
+  default     = "{{ .InstanceName }}"
+}
+
+variable "zone" {
+  description = "The zone for the instance."
+  type        = string
+  default     = "{{ .Zone }}"
+}

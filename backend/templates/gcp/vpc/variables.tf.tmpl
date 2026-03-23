@@ -1,0 +1,11 @@
+variable "project_id" {
+  description = "The GCP project ID."
+  type        = string
+  default     = "{{ .ProjectID }}"
+}
+
+variable "network_name" {
+  description = "The name of the VPC network."
+  type        = string
+  default     = "{{ .NetworkName }}"
+}

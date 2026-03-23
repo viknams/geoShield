@@ -1,0 +1,15 @@
+module "vpc" {
+  source     = "github.com/GoogleCloudPlatform/cloud-foundation-fabric//modules/net-vpc?ref={{ .FastRef }}"
+  project_id = var.project_id
+  name       = var.network_name
+  subnets    = [
+    {{- range .Subnets }}
+    {
+      name                = "{{ .Name }}"
+      region              = "{{ .Region }}"
+      ip_cidr_range       = "{{ .CIDR }}"
+      secondary_ip_ranges = null
+    },
+    {{- end }}
+  ]
+}

@@ -1,0 +1,8 @@
+module "gke-cluster" {
+  source     = "github.com/GoogleCloudPlatform/cloud-foundation-fabric//modules/gke-cluster?ref={{ .FastRef }}"
+  project_id = var.project_id
+  name       = var.cluster_name
+  location   = var.region
+  network    = "{{ .Network }}"
+  subnetwork = "{{ .Subnetwork }}"
+}

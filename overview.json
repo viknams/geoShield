@@ -1,0 +1,265 @@
+{
+  "rootFolder": "/Users/vs059f/Documents/terraform-mcp",
+  "analyzedAt": "2026-03-19T15:01:22.816Z",
+  "rootStructure": [
+    {
+      "name": "GEMINI.md",
+      "type": "file",
+      "size": 5133,
+      "lines": 284
+    },
+    {
+      "name": "backend",
+      "type": "dir"
+    },
+    {
+      "name": "go.mod",
+      "type": "file",
+      "size": 371,
+      "lines": 15
+    },
+    {
+      "name": "go.sum",
+      "type": "file",
+      "size": 1389,
+      "lines": 17
+    },
+    {
+      "name": "output",
+      "type": "dir"
+    },
+    {
+      "name": "project-phase-plan.md",
+      "type": "file",
+      "size": 1933,
+      "lines": 25
+    },
+    {
+      "name": "venv",
+      "type": "dir"
+    }
+  ],
+  "rootFileSnippets": {
+    "GEMINI.md": [
+      "# Gemini CLI: Terraform MCP Agent Rules",
+      "",
+      "## Architectural Rules",
+      "- **Agent Execution:** Never call `.run()` directly on an `LlmAgent` instance. Always wrap `LlmAgent` instances in a `Runner` (typically `InMemoryRunner` for local testing).",
+      "- **MCP Integration:** This project relies on the `hashicorp/terraform-mcp-server` running via Docker. Ensure Docker is active before execution.",
+      "- **Human-in-the-Loop:** Always implement explicit user confirmation for `terraform apply` commands within tool definitions.",
+      "",
+      "## Implementation Guide (Fixing the 'LlmAgent' Error)",
+      "To execute the agent correctly, use the `InMemoryRunner` from `google.adk.runners`:",
+      ""
+    ],
+    "go.mod": [
+      "module example.com/geoShield",
+      "",
+      "go 1.26.1",
+      "",
+      "require rsc.io/quote v1.5.2",
+      "",
+      "require (",
+      "github.com/google/go-github/v60 v60.0.0 // indirect",
+      "github.com/google/go-querystring v1.1.0 // indirect",
+      "github.com/joho/godotenv v1.5.1 // indirect"
+    ],
+    "go.sum": [
+      "github.com/google/go-cmp v0.5.2/go.mod h1:v8dTdLbMG2kIc/vJvl+f65V22dbkXbowE6jgT/gNBxE=",
+      "github.com/google/go-github/v60 v60.0.0 h1:oLG98PsLauFvvu4D/YPxq374jhSxFYdzQGNCyONLfn8=",
+      "github.com/google/go-github/v60 v60.0.0/go.mod h1:ByhX2dP9XT9o/ll2yXAu2VD8l5eNVg8hD4Cr0S/LmQk=",
+      "github.com/google/go-querystring v1.1.0 h1:AnCroh3fv4ZBgVIf1Iwtovgjaw/GiKJo8M8yD/fhyJ8=",
+      "github.com/google/go-querystring v1.1.0/go.mod h1:Kcdr2DB4koayq7X8pmAG4sNG59So17icRSOU623lUBU=",
+      "github.com/joho/godotenv v1.5.1 h1:7eLL/+HRGLY0ldzfGMeQkb7vMd0as4CfYvUVzLqw0N0=",
+      "github.com/joho/godotenv v1.5.1/go.mod h1:f4LDr5Voq0i2e/R5DDNOoa2zzDfwtkZa6DnEwAbqwq4=",
+      "golang.org/x/oauth2 v0.36.0 h1:peZ/1z27fi9hUOFCAZaHyrpWG5lwe0RJEEEeH0ThlIs=",
+      "golang.org/x/oauth2 v0.36.0/go.mod h1:YDBUJMTkDnJS+A4BP4eZBjCqtokkg1hODuPjwiGPO7Q=",
+      "golang.org/x/text v0.0.0-20170915032832-14c0d48ead0c h1:qgOY6WgZOaTkIIMiVjBQcw93ERBE4m30iBm00nkL0i8="
+    ],
+    "project-phase-plan.md": [
+      "# GCP-First SaaS Implementation Plan",
+      "",
+      "This document outlines the phased implementation plan for the Go-based SaaS platform that automates the provisioning of Google Cloud Platform landing zones.",
+      "",
+      "### Phase 1: Core Backend & Project Setup (Go on GCP)",
+      "1.  **Initialize Go Project:** Set up the Go module (`go mod init`) and create the initial directory structure for our backend.",
+      "2.  **Set up Web Server:** Implement a basic HTTP server using Gin to handle API requests. This will be containerized for deployment to **Cloud Run**.",
+      "3.  **Define Database Models:** Create the GORM models for `User`, `Organization`, and `Project`.",
+      "4.  **Database Connection:** Implement the logic to connect to a **Cloud SQL for PostgreSQL** instance.",
+      "5.  **GitHub Authentication:** Implement the OAuth flow for user login."
+    ]
+  },
+  "importantFolders": [
+    {
+      "path": "backend",
+      "category": "backend",
+      "fileCount": 7,
+      "primaryLanguage": "Go"
+    },
+    {
+      "path": "output",
+      "category": "build",
+      "fileCount": 4
+    }
+  ],
+  "readmeParagraphs": {},
+  "totals": {
+    "numFiles": 17,
+    "numDirs": 9,
+    "totalSizeBytes": 24188,
+    "totalLinesOfCode": 280
+  },
+  "fileCategories": {
+    "other": 9,
+    "documentation": 2,
+    "source": 3,
+    "build": 2,
+    "config": 1
+  },
+  "linesOfCodePerLanguage": {
+    "Go": 280
+  },
+  "filesPerLanguage": {
+    "Go": 3
+  },
+  "projectTypes": [
+    "Go (Modules)"
+  ],
+  "frameworks": [],
+  "entryPoints": [],
+  "ciCdTools": [],
+  "packageManagers": [
+    "go mod"
+  ],
+  "topLevelDirectories": [
+    {
+      "name": "backend",
+      "numFiles": 7,
+      "totalLoc": 280,
+      "dominantLanguage": "Go"
+    },
+    {
+      "name": "output",
+      "numFiles": 4,
+      "totalLoc": 0
+    }
+  ],
+  "detailedDirectories": [
+    {
+      "path": "backend",
+      "name": "backend",
+      "level": 1,
+      "numFiles": 7,
+      "totalLoc": 280,
+      "dominantLanguage": "Go",
+      "category": "General",
+      "description": "General module with 7 files (Go)",
+      "subdirectories": [
+        {
+          "path": "backend/internal",
+          "name": "internal",
+          "level": 2,
+          "numFiles": 2,
+          "totalLoc": 180,
+          "dominantLanguage": "Go",
+          "category": "General",
+          "description": "General module with 2 files (Go)",
+          "subdirectories": [
+            {
+              "path": "backend/internal/git",
+              "name": "git",
+              "level": 3,
+              "numFiles": 1,
+              "totalLoc": 105,
+              "dominantLanguage": "Go",
+              "category": "General",
+              "description": "General module with 1 files (Go)",
+              "subdirectories": []
+            },
+            {
+              "path": "backend/internal/generator",
+              "name": "generator",
+              "level": 3,
+              "numFiles": 1,
+              "totalLoc": 75,
+              "dominantLanguage": "Go",
+              "category": "General",
+              "description": "General module with 1 files (Go)",
+              "subdirectories": []
+            }
+          ]
+        },
+        {
+          "path": "backend/cmd",
+          "name": "cmd",
+          "level": 2,
+          "numFiles": 1,
+          "totalLoc": 100,
+          "dominantLanguage": "Go",
+          "category": "General",
+          "description": "General module with 1 files (Go)",
+          "subdirectories": [
+            {
+              "path": "backend/cmd/generator",
+              "name": "generator",
+              "level": 3,
+              "numFiles": 1,
+              "totalLoc": 100,
+              "dominantLanguage": "Go",
+              "category": "General",
+              "description": "General module with 1 files (Go)",
+              "subdirectories": []
+            }
+          ]
+        },
+        {
+          "path": "backend/templates",
+          "name": "templates",
+          "level": 2,
+          "numFiles": 4,
+          "totalLoc": 0,
+          "category": "Views/Templates",
+          "description": "Views/Templates module with 4 files",
+          "subdirectories": []
+        }
+      ]
+    },
+    {
+      "path": "output",
+      "name": "output",
+      "level": 1,
+      "numFiles": 4,
+      "totalLoc": 0,
+      "category": "General",
+      "description": "General module with 4 files",
+      "subdirectories": []
+    }
+  ],
+  "architecturalInsights": {
+    "coreApplications": [],
+    "entryPointDetails": [],
+    "serviceArchitecture": {
+      "microservices": [],
+      "monoliths": [],
+      "libraries": []
+    },
+    "layeredArchitecture": {
+      "presentation": [],
+      "business": [],
+      "data": [],
+      "infrastructure": []
+    }
+  },
+  "largeFiles": [],
+  "dependencies": {
+    "production": [],
+    "development": [],
+    "total": 0
+  },
+  "complexity": {
+    "averageFileSize": 16.470588235294116,
+    "maxFileSize": 0,
+    "nestedDepth": 0,
+    "estimatedComplexity": "low"
+  }
+}

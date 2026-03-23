@@ -1,0 +1,9 @@
+module "db" {
+  source           = "github.com/GoogleCloudPlatform/cloud-foundation-fabric//modules/cloudsql-instance?ref={{ .FastRef }}"
+  project_id       = var.project_id
+  network          = "{{ .Network }}"
+  name             = var.db_name
+  region           = var.region
+  database_version = "{{ .DBVersion }}"
+  tier             = "{{ .Tier }}"
+}

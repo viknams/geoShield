@@ -1,0 +1,17 @@
+variable "project_id" {
+  description = "The GCP project ID."
+  type        = string
+  default     = "{{ .ProjectID }}"
+}
+
+variable "cluster_name" {
+  description = "The name of the GKE cluster."
+  type        = string
+  default     = "{{ .ClusterName }}"
+}
+
+variable "region" {
+  description = "The region for the cluster."
+  type        = string
+  default     = "{{ .Region }}"
+}

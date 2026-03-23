@@ -1,0 +1,5 @@
+module "lb-app-ext" {
+  source     = "github.com/GoogleCloudPlatform/cloud-foundation-fabric//modules/net-lb-app-ext?ref={{ .FastRef }}"
+  project_id = var.project_id
+  name       = var.lb_name
+}

@@ -1,0 +1,49 @@
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Python virtual environment
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+
+# Go specific
+/backend/bin/
+/backend/tmp/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.sum
+
+# Node/Frontend (in case of root usage)
+node_modules/
+.next/
+out/
+build/
+.vercel
+*.tsbuildinfo
+
+# Project specific
+output/
+data/gcp_old/
+# If data/gcp/*.csv are meant to be templates or input, we keep them. 
+# But usually generated CSVs should be ignored.
+# data/gcp/*.csv
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfplan
+.terraform.lock.hcl

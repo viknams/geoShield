@@ -1,0 +1,16 @@
+module "instance" {
+  source     = "github.com/GoogleCloudPlatform/cloud-foundation-fabric//modules/compute-vm?ref={{ .FastRef }}"
+  project_id = var.project_id
+  zone       = var.zone
+  name       = var.instance_name
+  network_interfaces = [{
+    network    = "{{ .Network }}"
+    subnetwork = "{{ .Subnetwork }}"
+  }]
+  instance_type = "{{ .MachineType }}"
+  boot_disk = {
+    initialize_params = {
+      image = "{{ .Image }}"
+    }
+  }
+}

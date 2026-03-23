@@ -1,0 +1,4 @@
+ResourceName,ProjectID,NetworkName,Region,Subnets,FastRef
+entergis-vpc,wayfair-test-378605,entergis-vpc,me-central1,subnet-1:me-central1:10.0.1.0/24,v34.1.0
+guacamole-vpc,wayfair-test-378605,guacamole-vpc,me-central1,subnet-1:me-central1:10.0.1.0/24,v34.1.0
+wf-vpc-dev,wayfair-test-378605,wf-vpc-dev,me-central1,subnet-1:me-central1:10.0.1.0/24,v34.1.0

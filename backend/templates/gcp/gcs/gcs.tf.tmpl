@@ -1,0 +1,7 @@
+module "bucket" {
+  source     = "github.com/GoogleCloudPlatform/cloud-foundation-fabric//modules/gcs?ref={{ .FastRef }}"
+  project_id = var.project_id
+  name       = var.bucket_name
+  location   = var.location
+  versioning = {{ .Versioning }}
+}

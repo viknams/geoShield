@@ -1,0 +1,9 @@
+version: 3
+autodiscover:
+  enabled: true
+projects:
+- name: {{ .ProjectName }}
+  dir: .
+  autoplan:
+    enabled: true
+    when_modified: ["**/*.tf"]
