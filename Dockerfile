@@ -1,4 +1,4 @@
-FROM golang:1.22-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 WORKDIR /app
 
@@ -6,6 +6,8 @@ WORKDIR /app
 COPY go.mod go.sum* ./
 
 # Download all dependencies. Dependencies will be cached if the go.mod and go.sum files are not changed
+ENV GOPROXY=https://goproxy.io,direct
+RUN go mod tidy
 RUN go mod download
 
 # Copy the source code into the container
@@ -27,6 +29,7 @@ COPY --from=builder /api /api
 
 # Copy necessary files for the application to run
 # The backend expects 'backend/templates' and potentially 'data/gcp'
+RUN mkdir -p /app/data
 COPY --from=builder /app/backend/templates ./backend/templates
 COPY --from=builder /app/data ./data
 
