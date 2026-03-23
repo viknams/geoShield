@@ -20,14 +20,18 @@ type DiscoveryService struct {
 	ProjectID string
 }
 
-func NewDiscoveryService(ctx context.Context, projectID string, impersonateEmail string) (*DiscoveryService, error) {
+func NewDiscoveryService(ctx context.Context, projectID string, impersonateEmail string, saJSON string) (*DiscoveryService, error) {
 	var opts []option.ClientOption
+
+	if saJSON != "" {
+		opts = append(opts, option.WithCredentialsJSON([]byte(saJSON)))
+	}
 
 	if impersonateEmail != "" {
 		ts, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{
 			TargetPrincipal: impersonateEmail,
 			Scopes:          []string{"https://www.googleapis.com/auth/cloud-platform"},
-		})
+		}, opts...) // Use existing opts (like SA credentials) to impersonate
 		if err != nil {
 			return nil, fmt.Errorf("failed to create impersonated token source: %w", err)
 		}

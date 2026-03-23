@@ -23,7 +23,8 @@ type APIHandler struct {
 	GenSvc       *generator.Generator
 	DataDir      string
 	OutputDir    string
-	ImpersonateEmail string
+	ImpersonateEmail   string
+	ServiceAccountJSON string
 	
 	// Track auth status
 	mu          sync.RWMutex
@@ -44,6 +45,16 @@ func (h *APIHandler) AuthGCP(c *gin.Context) {
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
+
+	// Check if already authenticated via ServiceAccountJSON or if we're on Cloud Run (usually doesn't need browser auth)
+	if h.ServiceAccountJSON != "" || os.Getenv("K_SERVICE") != "" {
+		h.authStatus = "Completed"
+		log.Printf("Already authenticated via environment (ServiceAccountJSON or Cloud Run). Skipping browser login.")
+		c.JSON(http.StatusOK, gin.H{
+			"status": "Already authenticated via environment. Browser login skipped.",
+		})
+		return
+	}
 
 	if impersonate != "" {
 		h.authStatus = "Completed"
@@ -92,7 +103,7 @@ func (h *APIHandler) DiscoverGCP(c *gin.Context) {
 	}
 
 	ctx := context.Background()
-	svc, err := discovery.NewDiscoveryService(ctx, projectID, impersonate)
+	svc, err := discovery.NewDiscoveryService(ctx, projectID, impersonate, h.ServiceAccountJSON)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to init discovery: %v", err)})
 		return
@@ -144,7 +155,7 @@ func (h *APIHandler) FilterGCP(c *gin.Context) {
 	}
 
 	ctx := context.Background()
-	svc, err := discovery.NewFilterService(ctx, projectID, impersonate)
+	svc, err := discovery.NewFilterService(ctx, projectID, impersonate, h.ServiceAccountJSON)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to init filter: %v", err)})
 		return

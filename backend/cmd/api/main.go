@@ -27,10 +27,15 @@ func main() {
 	_ = godotenv.Load(filepath.Join(rootDir, ".env"))
 
 	h := &api.APIHandler{
-		DataDir:          filepath.Join(rootDir, "data", "gcp"),
-		OutputDir:        filepath.Join(rootDir, "output"),
-		GenSvc:           generator.New(filepath.Join(rootDir, "backend", "templates")),
-		ImpersonateEmail: os.Getenv("GCP_IMPERSONATE_EMAIL"),
+		DataDir:            filepath.Join(rootDir, "data", "gcp"),
+		OutputDir:          filepath.Join(rootDir, "output"),
+		GenSvc:             generator.New(filepath.Join(rootDir, "backend", "templates")),
+		ImpersonateEmail:   os.Getenv("GCP_IMPERSONATE_EMAIL"),
+		ServiceAccountJSON: os.Getenv("GCP_SERVICE_ACCOUNT_JSON"),
+	}
+
+	if h.ServiceAccountJSON != "" {
+		log.Printf("Using Service Account JSON from environment.")
 	}
 
 	if h.ImpersonateEmail != "" {

@@ -19,16 +19,21 @@ import (
 type FilterService struct {
 	adminClient *logadmin.Client
 	ProjectID   string
+	saJSON      string
 }
 
-func NewFilterService(ctx context.Context, projectID string, impersonateEmail string) (*FilterService, error) {
+func NewFilterService(ctx context.Context, projectID string, impersonateEmail string, saJSON string) (*FilterService, error) {
 	var opts []option.ClientOption
+
+	if saJSON != "" {
+		opts = append(opts, option.WithCredentialsJSON([]byte(saJSON)))
+	}
 
 	if impersonateEmail != "" {
 		ts, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{
 			TargetPrincipal: impersonateEmail,
 			Scopes:          []string{"https://www.googleapis.com/auth/cloud-platform", "https://www.googleapis.com/auth/logging.admin"},
-		})
+		}, opts...)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create impersonated token source: %w", err)
 		}
@@ -39,7 +44,7 @@ func NewFilterService(ctx context.Context, projectID string, impersonateEmail st
 	if err != nil {
 		return nil, fmt.Errorf("failed to create logadmin client: %w", err)
 	}
-	return &FilterService{adminClient: adminClient, ProjectID: projectID}, nil
+	return &FilterService{adminClient: adminClient, ProjectID: projectID, saJSON: saJSON}, nil
 }
 
 type UnifiedResource struct {
