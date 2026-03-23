@@ -25,7 +25,6 @@ __pycache__/
 *.dylib
 *.test
 *.out
-go.sum
 
 # Node/Frontend (in case of root usage)
 node_modules/
