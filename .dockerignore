@@ -1,0 +1,24 @@
+# Environments
+.env
+.env.*
+!.env.example
+
+# Git
+.git
+.gitignore
+
+# Go
+/output
+/data
+api.log
+api.pid
+
+# Node
+node_modules/
+.next/
+dist/
+build/
+npm-debug.log*
+
+# Mac
+.DS_Store
