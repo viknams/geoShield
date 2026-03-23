@@ -9,19 +9,24 @@ import (
 	"example.com/geoShield/backend/internal/generator"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
-	"github.com/joho/godotenv"
 )
 
 func main() {
-	if err := godotenv.Load(); err != nil {
-		log.Println("No .env file found")
+	cwd, err := os.Getwd()
+	if err != nil {
+		log.Fatalf("failed to get working dir: %v", err)
 	}
 
-	cwd, _ := os.Getwd()
+	// Adjust cwd if we are running from within the backend directory
+	rootDir := cwd
+	if filepath.Base(cwd) == "backend" {
+		rootDir = filepath.Dir(cwd)
+	}
+
 	h := &api.APIHandler{
-		DataDir:          filepath.Join(cwd, "data", "gcp"),
-		OutputDir:        filepath.Join(cwd, "output"),
-		GenSvc:           generator.New(filepath.Join(cwd, "backend", "templates")),
+		DataDir:          filepath.Join(rootDir, "data", "gcp"),
+		OutputDir:        filepath.Join(rootDir, "output"),
+		GenSvc:           generator.New(filepath.Join(rootDir, "backend", "templates")),
 		ImpersonateEmail: os.Getenv("GCP_IMPERSONATE_EMAIL"),
 	}
 
@@ -39,7 +44,7 @@ func main() {
 	r.GET("/api/gcp/resources", h.ListResources)
 	r.GET("/api/gcp/resources/active", h.ListActiveResources)
 	r.POST("/api/gcp/filter", h.FilterGCP)
-	r.GET("/api/gcp/plan", h.PlanTerraform)
+	r.POST("/api/gcp/plan", h.PlanTerraform)
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -49,3 +54,4 @@ func main() {
 	log.Printf("Server starting on port %s", port)
 	r.Run(":" + port)
 }
+

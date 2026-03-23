@@ -1,0 +1,18 @@
+2026/03/23 16:30:19 Using Impersonation Email: tf-service-account@wayfair-test-378605.iam.gserviceaccount.com
+[GIN-debug] [WARNING] Creating an Engine instance with the Logger and Recovery middleware already attached.
+
+[GIN-debug] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+
+[GIN-debug] POST   /api/gcp/auth             --> example.com/geoShield/backend/internal/api.(*APIHandler).AuthGCP-fm (4 handlers)
+[GIN-debug] GET    /api/gcp/auth/status      --> example.com/geoShield/backend/internal/api.(*APIHandler).GetAuthStatus-fm (4 handlers)
+[GIN-debug] POST   /api/gcp/discover         --> example.com/geoShield/backend/internal/api.(*APIHandler).DiscoverGCP-fm (4 handlers)
+[GIN-debug] GET    /api/gcp/resources        --> example.com/geoShield/backend/internal/api.(*APIHandler).ListResources-fm (4 handlers)
+[GIN-debug] GET    /api/gcp/resources/active --> example.com/geoShield/backend/internal/api.(*APIHandler).ListActiveResources-fm (4 handlers)
+[GIN-debug] POST   /api/gcp/filter           --> example.com/geoShield/backend/internal/api.(*APIHandler).FilterGCP-fm (4 handlers)
+[GIN-debug] POST   /api/gcp/plan             --> example.com/geoShield/backend/internal/api.(*APIHandler).PlanTerraform-fm (4 handlers)
+2026/03/23 16:30:19 Server starting on port 8080
+[GIN-debug] [WARNING] You trusted all proxies, this is NOT safe. We recommend you to set a value.
+Please check https://github.com/gin-gonic/gin/blob/master/docs/doc.md#dont-trust-all-proxies for details.
+[GIN-debug] Listening and serving HTTP on :8080

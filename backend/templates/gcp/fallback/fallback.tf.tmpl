@@ -1,0 +1,13 @@
+resource "null_resource" "unsupported_resource" {
+  triggers = {
+    project_id   = var.project_id
+    service_type = "{{ .ServiceType }}"
+    name         = "{{ .Name }}"
+    region       = var.region
+    fast_ref     = "{{ .FastRef }}"
+  }
+
+  provisioner "local-exec" {
+    command = "echo 'Placeholder for ${self.triggers.service_type} - ${self.triggers.name}'"
+  }
+}
