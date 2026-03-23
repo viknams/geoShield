@@ -34,14 +34,15 @@ func main() {
 		ServiceAccountJSON: os.Getenv("GCP_SERVICE_ACCOUNT_JSON"),
 	}
 
-	if h.ServiceAccountJSON != "" {
-		log.Printf("Using Service Account JSON from environment.")
-	}
-
-	if h.ImpersonateEmail != "" {
-		log.Printf("Using Impersonation Email: %s", h.ImpersonateEmail)
+	// Log authentication source
+	if os.Getenv("K_SERVICE") != "" {
+		log.Printf("Running on Cloud Run. Using Cloud Run Metadata Server for authentication.")
+	} else if h.ServiceAccountJSON != "" {
+		log.Printf("Using Service Account JSON from GCP_SERVICE_ACCOUNT_JSON.")
+	} else if os.Getenv("GOOGLE_APPLICATION_CREDENTIALS") != "" {
+		log.Printf("Using Google Application Default Credentials (ADC) from file: %s", os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
 	} else {
-		log.Printf("No Impersonation Email provided, will run without impersonation if not specified per request.")
+		log.Printf("No environment credentials found. Using local gcloud ADC or interactive login.")
 	}
 
 	r := gin.Default()

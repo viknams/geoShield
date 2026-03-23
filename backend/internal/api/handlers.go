@@ -46,12 +46,15 @@ func (h *APIHandler) AuthGCP(c *gin.Context) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	// Check if already authenticated via ServiceAccountJSON or if we're on Cloud Run (usually doesn't need browser auth)
-	if h.ServiceAccountJSON != "" || os.Getenv("K_SERVICE") != "" {
+	// Check for environment-based authentication
+	// 1. K_SERVICE: Set by Cloud Run (uses Metadata Server)
+	// 2. GOOGLE_APPLICATION_CREDENTIALS: Standard ADC file path
+	// 3. ServiceAccountJSON: Custom JSON content
+	if os.Getenv("K_SERVICE") != "" || os.Getenv("GOOGLE_APPLICATION_CREDENTIALS") != "" || h.ServiceAccountJSON != "" {
 		h.authStatus = "Completed"
-		log.Printf("Already authenticated via environment (ServiceAccountJSON or Cloud Run). Skipping browser login.")
+		log.Printf("Detected environment-based authentication (Cloud Run Metadata, ADC, or JSON). Browser login skipped.")
 		c.JSON(http.StatusOK, gin.H{
-			"status": "Already authenticated via environment. Browser login skipped.",
+			"status": "Authenticated via environment. Browser login skipped.",
 		})
 		return
 	}

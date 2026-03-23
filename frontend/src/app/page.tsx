@@ -63,7 +63,7 @@ export default function Home() {
 
   const fetchResources = async () => {
     try {
-      const res = await fetch(`http://localhost:8080/api/gcp/resources`);
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/resources`);
       const data = await res.json();
       setResources(data);
     } catch (e) {
@@ -73,7 +73,7 @@ export default function Home() {
 
   const fetchActiveResources = async () => {
     try {
-      const res = await fetch(`http://localhost:8080/api/gcp/resources/active`);
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/resources/active`);
       const data = await res.json();
       if (data && !data.error) {
         for (const key in data) {
@@ -198,7 +198,7 @@ export default function Home() {
         options.headers = { "Content-Type": "application/json" };
         options.body = JSON.stringify(bodyData);
       }
-      const res = await fetch(`http://localhost:8080/api/gcp/${endpoint}?project=${projectID}`, options);
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/${endpoint}?project=${projectID}`, options);
       const data = await res.json();
       if (data.error) throw new Error(data.error);
 
@@ -232,7 +232,7 @@ export default function Home() {
     if (isAuthPolling) {
       interval = setInterval(async () => {
         try {
-          const res = await fetch(`http://localhost:8080/api/gcp/auth/status`);
+          const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/auth/status`);
           const data = await res.json();
           if (data.status === "Completed") {
             setStatus("Authentication successful! You can now proceed to discovery.");
