@@ -26,7 +26,7 @@ func main() {
 	}
 
 	ctx := context.Background()
-	svc, err := discovery.NewFilterService(ctx, *projectID, *impersonate)
+	svc, err := discovery.NewFilterService(ctx, *projectID, *impersonate, os.Getenv("GCP_SERVICE_ACCOUNT_JSON"))
 	if err != nil {
 		log.Fatalf("failed to initialize filter service: %v", err)
 	}

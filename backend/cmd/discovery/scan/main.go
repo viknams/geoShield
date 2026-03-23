@@ -27,7 +27,7 @@ func main() {
 	}
 
 	ctx := context.Background()
-	svc, err := discovery.NewDiscoveryService(ctx, *projectID, *impersonate)
+	svc, err := discovery.NewDiscoveryService(ctx, *projectID, *impersonate, os.Getenv("GCP_SERVICE_ACCOUNT_JSON"))
 	if err != nil {
 		log.Fatalf("failed to initialize discovery service: %v", err)
 	}
