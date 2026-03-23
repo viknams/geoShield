@@ -1,2 +1,0 @@
-ResourceName,AssetType,ProjectID,Region,FullResourcePath
-billingInfo,cloudbilling.googleapis.com/ProjectBillingInfo,gemini-poc-486906,global,//cloudbilling.googleapis.com/projects/gemini-poc-486906/billingInfo

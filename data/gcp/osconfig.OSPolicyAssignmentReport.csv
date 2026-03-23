@@ -1,5 +1,0 @@
-ResourceName,AssetType,ProjectID,Region,FullResourcePath
-report,osconfig.googleapis.com/OSPolicyAssignmentReport,gemini-poc-486906,me-central1-b,//osconfig.googleapis.com/projects/812405213898/locations/me-central1-b/instances/4600528422319254157/osPolicyAssignments/goog-ops-agent-v2-template-1-5-0-me-central1-b/report
-report,osconfig.googleapis.com/OSPolicyAssignmentReport,gemini-poc-486906,me-central1-b,//osconfig.googleapis.com/projects/812405213898/locations/me-central1-b/instances/5626088268105607931/osPolicyAssignments/goog-ops-agent-v2-template-1-5-0-me-central1-b/report
-report,osconfig.googleapis.com/OSPolicyAssignmentReport,gemini-poc-486906,me-central1-b,//osconfig.googleapis.com/projects/812405213898/locations/me-central1-b/instances/8503441873655655111/osPolicyAssignments/goog-ops-agent-v2-template-1-5-0-me-central1-b/report
-report,osconfig.googleapis.com/OSPolicyAssignmentReport,gemini-poc-486906,me-central1-b,//osconfig.googleapis.com/projects/812405213898/locations/me-central1-b/instances/8792699653229210287/osPolicyAssignments/goog-ops-agent-v2-template-1-5-0-me-central1-b/report

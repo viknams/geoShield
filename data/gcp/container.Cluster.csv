@@ -1,2 +1,0 @@
-ResourceName,AssetType,ProjectID,Region,FullResourcePath
-demo-gk1,container.googleapis.com/Cluster,gemini-poc-486906,me-central1,//container.googleapis.com/projects/gemini-poc-486906/locations/me-central1/clusters/demo-gk1

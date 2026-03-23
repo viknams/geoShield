@@ -1,2 +1,0 @@
-ResourceName,AssetType,ProjectID,Region,FullResourcePath
-demo-vpc,servicenetworking.googleapis.com/Connection,gemini-poc-486906,global,//servicenetworking.googleapis.com/projects/812405213898/global/networks/demo-vpc

@@ -1,3 +1,0 @@
-ResourceName,ProjectID,Region,Importance,LastActivity,AssetType,FullResourcePath
-my-sql-demo1,gemini-poc-486906,me-central1,High,Unknown (Always Important),sqladmin.googleapis.com/Instance,//cloudsql.googleapis.com/projects/gemini-poc-486906/instances/my-sql-demo1
-pgsql-demo,gemini-poc-486906,us-central1,High,Unknown (Always Important),sqladmin.googleapis.com/Instance,//cloudsql.googleapis.com/projects/gemini-poc-486906/instances/pgsql-demo

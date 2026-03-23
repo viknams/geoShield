@@ -1,3 +1,0 @@
-ResourceName,AssetType,ProjectID,Region,FullResourcePath
-alertmanager,apps.k8s.io/StatefulSet,gemini-poc-486906,me-central1,//container.googleapis.com/projects/gemini-poc-486906/locations/me-central1/clusters/demo-gk1/k8s/namespaces/gke-gmp-system/apps/statefulsets/alertmanager
-kube-state-metrics,apps.k8s.io/StatefulSet,gemini-poc-486906,me-central1,//container.googleapis.com/projects/gemini-poc-486906/locations/me-central1/clusters/demo-gk1/k8s/namespaces/gke-managed-cim/apps/statefulsets/kube-state-metrics

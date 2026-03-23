@@ -1,5 +1,0 @@
-ResourceName,AssetType,ProjectID,Region,FullResourcePath
-6808754715867096559,dns.googleapis.com/ResponsePolicy,gemini-poc-486906,global,//dns.googleapis.com/projects/812405213898/locations/global/responsePolicies/6808754715867096559
-5890484908545373483,dns.googleapis.com/ResponsePolicy,gemini-poc-486906,me-central1-a,//dns.googleapis.com/projects/812405213898/locations/me-central1-a/responsePolicies/5890484908545373483
-8049703045766110690,dns.googleapis.com/ResponsePolicy,gemini-poc-486906,me-central1-b,//dns.googleapis.com/projects/812405213898/locations/me-central1-b/responsePolicies/8049703045766110690
-5199953162892158024,dns.googleapis.com/ResponsePolicy,gemini-poc-486906,me-central1-c,//dns.googleapis.com/projects/812405213898/locations/me-central1-c/responsePolicies/5199953162892158024

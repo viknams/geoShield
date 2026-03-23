@@ -1,4 +1,0 @@
-ResourceName,AssetType,ProjectID,Region,FullResourcePath
-default_collection,discoveryengine.googleapis.com/Collection,gemini-poc-486906,eu,//discoveryengine.googleapis.com/projects/812405213898/locations/eu/collections/default_collection
-default_collection,discoveryengine.googleapis.com/Collection,gemini-poc-486906,global,//discoveryengine.googleapis.com/projects/812405213898/locations/global/collections/default_collection
-default_collection,discoveryengine.googleapis.com/Collection,gemini-poc-486906,us,//discoveryengine.googleapis.com/projects/812405213898/locations/us/collections/default_collection

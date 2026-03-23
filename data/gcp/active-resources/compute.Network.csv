@@ -1,2 +1,0 @@
-ResourceName,ProjectID,Region,Importance,LastActivity,AssetType,FullResourcePath
-demo-vpc,gemini-poc-486906,global,High,Unknown (Always Important),compute.googleapis.com/Network,//compute.googleapis.com/projects/gemini-poc-486906/global/networks/demo-vpc

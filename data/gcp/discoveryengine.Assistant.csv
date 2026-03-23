@@ -1,2 +1,0 @@
-ResourceName,AssetType,ProjectID,Region,FullResourcePath
-default_assistant,discoveryengine.googleapis.com/Assistant,gemini-poc-486906,global,//discoveryengine.googleapis.com/projects/812405213898/locations/global/collections/default_collection/engines/gemini-enterprise-17706190_1770619015866/assistants/default_assistant

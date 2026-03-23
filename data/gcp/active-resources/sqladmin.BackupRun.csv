@@ -1,3 +1,0 @@
-ResourceName,ProjectID,Region,Importance,LastActivity,AssetType,FullResourcePath
-1774246389255,gemini-poc-486906,eu,High,Unknown (Always Important),sqladmin.googleapis.com/BackupRun,//cloudsql.googleapis.com/projects/gemini-poc-486906/instances/my-sql-demo1/backupRuns/1774246389255
-1774246439374,gemini-poc-486906,us,High,Unknown (Always Important),sqladmin.googleapis.com/BackupRun,//cloudsql.googleapis.com/projects/gemini-poc-486906/instances/pgsql-demo/backupRuns/1774246439374

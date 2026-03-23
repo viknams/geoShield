@@ -1,2 +1,0 @@
-ResourceName,ProjectID,Region,Importance,LastActivity,AssetType,FullResourcePath
-demo-gk1,gemini-poc-486906,me-central1,High,Unknown (Always Important),container.googleapis.com/Cluster,//container.googleapis.com/projects/gemini-poc-486906/locations/me-central1/clusters/demo-gk1

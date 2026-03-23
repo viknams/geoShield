@@ -1,5 +1,0 @@
-ResourceName,AssetType,ProjectID,Region,FullResourcePath
-gke-demo-gk1-4db67088-all,compute.googleapis.com/Firewall,gemini-poc-486906,global,//compute.googleapis.com/projects/gemini-poc-486906/global/firewalls/gke-demo-gk1-4db67088-all
-gke-demo-gk1-4db67088-exkubelet,compute.googleapis.com/Firewall,gemini-poc-486906,global,//compute.googleapis.com/projects/gemini-poc-486906/global/firewalls/gke-demo-gk1-4db67088-exkubelet
-gke-demo-gk1-4db67088-inkubelet,compute.googleapis.com/Firewall,gemini-poc-486906,global,//compute.googleapis.com/projects/gemini-poc-486906/global/firewalls/gke-demo-gk1-4db67088-inkubelet
-gke-demo-gk1-4db67088-vms,compute.googleapis.com/Firewall,gemini-poc-486906,global,//compute.googleapis.com/projects/gemini-poc-486906/global/firewalls/gke-demo-gk1-4db67088-vms
