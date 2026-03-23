@@ -7,7 +7,6 @@ COPY go.mod go.sum* ./
 
 # Download all dependencies. Dependencies will be cached if the go.mod and go.sum files are not changed
 ENV GOPROXY=https://goproxy.io,direct
-RUN go mod tidy
 RUN go mod download
 
 # Copy the source code into the container
