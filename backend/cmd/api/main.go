@@ -30,10 +30,11 @@ func main() {
 		ImpersonateEmail: os.Getenv("GCP_IMPERSONATE_EMAIL"),
 	}
 
-	if h.ImpersonateEmail == "" {
-		h.ImpersonateEmail = "tf-service-account@wayfair-test-378605.iam.gserviceaccount.com"
+	if h.ImpersonateEmail != "" {
+		log.Printf("Using Impersonation Email: %s", h.ImpersonateEmail)
+	} else {
+		log.Printf("No Impersonation Email provided, will run without impersonation if not specified per request.")
 	}
-	log.Printf("Using Impersonation Email: %s", h.ImpersonateEmail)
 
 	r := gin.Default()
 	r.Use(cors.Default())

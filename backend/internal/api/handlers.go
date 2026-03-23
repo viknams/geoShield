@@ -311,7 +311,8 @@ func (h *APIHandler) PlanTerraform(c *gin.Context) {
 
 	projectID := c.Query("project")
 	if projectID == "" {
-		projectID = "wayfair-test-378605"
+		c.JSON(http.StatusBadRequest, gin.H{"error": "project ID is required"})
+		return
 	}
 
 	config := generator.Config{
@@ -345,29 +346,46 @@ func (h *APIHandler) PlanTerraform(c *gin.Context) {
 	log.Printf("Generating Terraform for %d resources...", len(config.Resources))
 	_, err := h.GenSvc.Generate(config, h.OutputDir)
 	if err != nil {
+		log.Printf("Error generating terraform code: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to generate code: %v", err)})
 		return
 	}
 
 	var combinedOutput string
-	for _, res := range config.Resources {
+	for i, res := range config.Resources {
 		path := filepath.Join(h.OutputDir, config.FolderName, res.Type, res.Name)
+
+		displayType := res.Type
+		if displayType == "fallback" {
+			if fbData, ok := res.Data.(FallbackData); ok {
+				displayType = fbData.ServiceType
+			} else {
+				displayType = "generic-resource"
+			}
+		}
+
+		log.Printf("[%d/%d] Initializing Terraform for %s: %s", i+1, len(config.Resources), displayType, res.Name)
 
 		initCmd := exec.Command("terraform", "init", "-no-color")
 		initCmd.Dir = path
 		initOutput, err := initCmd.CombinedOutput()
 		if err != nil {
-			combinedOutput += fmt.Sprintf("=== Init Error for %s %s ===\n%s\n", res.Type, res.Name, string(initOutput))
+			log.Printf("-> Terraform init failed for %s: %v", res.Name, err)
+			combinedOutput += fmt.Sprintf("=== Init Error for %s: %s ===\n%s\n", displayType, res.Name, string(initOutput))
 			continue
 		}
 
+		log.Printf("[%d/%d] Running Terraform plan for %s: %s", i+1, len(config.Resources), displayType, res.Name)
 		planCmd := exec.Command("terraform", "plan", "-no-color")
 		planCmd.Dir = path
 		output, err := planCmd.CombinedOutput()
 
-		combinedOutput += fmt.Sprintf("=== Plan for %s %s ===\n%s\n", res.Type, res.Name, string(output))
+		combinedOutput += fmt.Sprintf("=== Plan for %s: %s ===\n%s\n", displayType, res.Name, string(output))
 		if err != nil {
+			log.Printf("-> Terraform plan failed for %s: %v", res.Name, err)
 			combinedOutput += fmt.Sprintf("Error: %v\n", err)
+		} else {
+			log.Printf("-> Terraform plan succeeded for %s", res.Name)
 		}
 	}
 
@@ -375,5 +393,6 @@ func (h *APIHandler) PlanTerraform(c *gin.Context) {
 		combinedOutput = "No supported resources selected for planning. Ensure selected resources are supported by templates."
 	}
 
+	log.Printf("Completed planning for %d resources.", len(config.Resources))
 	c.JSON(http.StatusOK, gin.H{"plan_output": combinedOutput})
 }

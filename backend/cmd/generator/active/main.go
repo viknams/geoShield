@@ -91,7 +91,7 @@ func main() {
 		Cloud:       "gcp",
 		OrgName:     "wayfair",
 		FolderName:  "vikram-gcp-resources",
-		ProjectName: "wayfair-test-378605",
+		ProjectName: os.Getenv("GCP_PROJECT"),
 		PathPattern: "{{.FolderName}}/{{.Type}}/{{.Name}}",
 	}
 

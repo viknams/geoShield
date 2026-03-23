@@ -40,7 +40,7 @@ func main() {
 		jsonData, _ := json.Marshal(payload)
 		
 		fmt.Printf("\nTesting %s...\n", serviceType)
-		resp, err := http.Post("http://127.0.0.1:8080/api/gcp/plan?project=wayfair-test-378605", "application/json", bytes.NewBuffer(jsonData))
+		resp, err := http.Post("http://127.0.0.1:8080/api/gcp/plan?project=your-project-id", "application/json", bytes.NewBuffer(jsonData))
 		if err != nil {
 			fmt.Printf("Error: %v\n", err)
 			continue
