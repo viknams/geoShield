@@ -1,10 +1,11 @@
 variable "project_id" {
   description = "Project ID"
   type        = string
+  default     = "{{ .ProjectID }}"
 }
 
 variable "region" {
   description = "Region"
   type        = string
-  default     = "us-east1"
+  default     = "{{ .Region }}"
 }

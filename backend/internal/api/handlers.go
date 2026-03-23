@@ -37,14 +37,19 @@ func (h *APIHandler) AuthGCP(c *gin.Context) {
 		return
 	}
 
+	impersonate := c.Query("impersonate")
+	if impersonate == "" {
+		impersonate = h.ImpersonateEmail
+	}
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if h.ImpersonateEmail != "" {
+	if impersonate != "" {
 		h.authStatus = "Completed"
-		log.Printf("Impersonation active for %s. Skipping browser login.", h.ImpersonateEmail)
+		log.Printf("Impersonation active for %s. Skipping browser login.", impersonate)
 		c.JSON(http.StatusOK, gin.H{
-			"status": fmt.Sprintf("Impersonation active for %s. Browser login skipped.", h.ImpersonateEmail),
+			"status": fmt.Sprintf("Impersonation active for %s. Browser login skipped.", impersonate),
 		})
 		return
 	}
@@ -81,8 +86,13 @@ func (h *APIHandler) DiscoverGCP(c *gin.Context) {
 		return
 	}
 
+	impersonate := c.Query("impersonate")
+	if impersonate == "" {
+		impersonate = h.ImpersonateEmail
+	}
+
 	ctx := context.Background()
-	svc, err := discovery.NewDiscoveryService(ctx, projectID, h.ImpersonateEmail)
+	svc, err := discovery.NewDiscoveryService(ctx, projectID, impersonate)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to init discovery: %v", err)})
 		return
@@ -128,8 +138,13 @@ func (h *APIHandler) FilterGCP(c *gin.Context) {
 		return
 	}
 
+	impersonate := c.Query("impersonate")
+	if impersonate == "" {
+		impersonate = h.ImpersonateEmail
+	}
+
 	ctx := context.Background()
-	svc, err := discovery.NewFilterService(ctx, projectID, h.ImpersonateEmail)
+	svc, err := discovery.NewFilterService(ctx, projectID, impersonate)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to init filter: %v", err)})
 		return
