@@ -14,6 +14,7 @@ import (
 func main() {
 	projectID := flag.String("project", "", "GCP Project ID to discover resources from")
 	outputDir := flag.String("output", "data/gcp", "Directory to save CSV files")
+	impersonate := flag.String("impersonate", "tf-service-account@wayfair-test-378605.iam.gserviceaccount.com", "Service account to impersonate")
 	flag.Parse()
 
 	if *projectID == "" {
@@ -26,7 +27,7 @@ func main() {
 	}
 
 	ctx := context.Background()
-	svc, err := discovery.NewDiscoveryService(ctx, *projectID)
+	svc, err := discovery.NewDiscoveryService(ctx, *projectID, *impersonate)
 	if err != nil {
 		log.Fatalf("failed to initialize discovery service: %v", err)
 	}

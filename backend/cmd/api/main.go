@@ -19,10 +19,16 @@ func main() {
 
 	cwd, _ := os.Getwd()
 	h := &api.APIHandler{
-		DataDir:   filepath.Join(cwd, "data", "gcp"),
-		OutputDir: filepath.Join(cwd, "output"),
-		GenSvc:    generator.New(filepath.Join(cwd, "backend", "templates")),
+		DataDir:          filepath.Join(cwd, "data", "gcp"),
+		OutputDir:        filepath.Join(cwd, "output"),
+		GenSvc:           generator.New(filepath.Join(cwd, "backend", "templates")),
+		ImpersonateEmail: os.Getenv("GCP_IMPERSONATE_EMAIL"),
 	}
+
+	if h.ImpersonateEmail == "" {
+		h.ImpersonateEmail = "tf-service-account@wayfair-test-378605.iam.gserviceaccount.com"
+	}
+	log.Printf("Using Impersonation Email: %s", h.ImpersonateEmail)
 
 	r := gin.Default()
 	r.Use(cors.Default())

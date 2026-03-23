@@ -1,8 +1,0 @@
-ResourceName,ProjectID,Region,InstanceName,Zone,Network,Subnetwork,MachineType,Image,FastRef
-instance-demo-1,wayfair-test-378605,me-central1,instance-demo-1,me-central1-a,default,default,e2-medium,debian-cloud/debian-11,v34.1.0
-instance-20251208-053732,wayfair-test-378605,me-central1,instance-20251208-053732,me-central1-a,default,default,e2-medium,debian-cloud/debian-11,v34.1.0
-db-mgmt-vm,wayfair-test-378605,me-central1,db-mgmt-vm,me-central1-a,default,default,e2-medium,debian-cloud/debian-11,v34.1.0
-instance-20250911-065619,wayfair-test-378605,me-central1,instance-20250911-065619,me-central1-a,default,default,e2-medium,debian-cloud/debian-11,v34.1.0
-cloud-sql-poc,wayfair-test-378605,me-central1,cloud-sql-poc,me-central1-a,default,default,e2-medium,debian-cloud/debian-11,v34.1.0
-guacamole-server,wayfair-test-378605,me-central1,guacamole-server,me-central1-a,default,default,e2-medium,debian-cloud/debian-11,v34.1.0
-vm-for-vnc-test,wayfair-test-378605,me-central1,vm-for-vnc-test,me-central1-a,default,default,e2-medium,debian-cloud/debian-11,v34.1.0

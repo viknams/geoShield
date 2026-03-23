@@ -1,4 +1,0 @@
-ServiceType,ResourceName,ProjectID,Region,Importance,LastActivity
-vpc,entergis-vpc,wayfair-test-378605,me-central1,High,Unknown (Always Important)
-vpc,guacamole-vpc,wayfair-test-378605,me-central1,High,Unknown (Always Important)
-vpc,wf-vpc-dev,wayfair-test-378605,me-central1,High,Unknown (Always Important)
