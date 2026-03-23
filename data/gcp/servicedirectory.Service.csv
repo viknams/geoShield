@@ -1,0 +1,2 @@
+ResourceName,AssetType,ProjectID,Region,FullResourcePath
+gk3-demo-gk1-4db67088-2b3bbc46-pe,servicedirectory.googleapis.com/Service,gemini-poc-486906,me-central1,//servicedirectory.googleapis.com/projects/gemini-poc-486906/locations/me-central1/namespaces/goog-psc-default/services/gk3-demo-gk1-4db67088-2b3bbc46-pe

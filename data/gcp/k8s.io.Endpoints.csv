@@ -1,0 +1,9 @@
+ResourceName,AssetType,ProjectID,Region,FullResourcePath
+kubernetes,k8s.io/Endpoints,gemini-poc-486906,me-central1,//container.googleapis.com/projects/gemini-poc-486906/locations/me-central1/clusters/demo-gk1/k8s/namespaces/default/endpoints/kubernetes
+alertmanager,k8s.io/Endpoints,gemini-poc-486906,me-central1,//container.googleapis.com/projects/gemini-poc-486906/locations/me-central1/clusters/demo-gk1/k8s/namespaces/gke-gmp-system/endpoints/alertmanager
+gmp-operator,k8s.io/Endpoints,gemini-poc-486906,me-central1,//container.googleapis.com/projects/gemini-poc-486906/locations/me-central1/clusters/demo-gk1/k8s/namespaces/gke-gmp-system/endpoints/gmp-operator
+rule-evaluator,k8s.io/Endpoints,gemini-poc-486906,me-central1,//container.googleapis.com/projects/gemini-poc-486906/locations/me-central1/clusters/demo-gk1/k8s/namespaces/gke-gmp-system/endpoints/rule-evaluator
+antrea,k8s.io/Endpoints,gemini-poc-486906,me-central1,//container.googleapis.com/projects/gemini-poc-486906/locations/me-central1/clusters/demo-gk1/k8s/namespaces/kube-system/endpoints/antrea
+default-http-backend,k8s.io/Endpoints,gemini-poc-486906,me-central1,//container.googleapis.com/projects/gemini-poc-486906/locations/me-central1/clusters/demo-gk1/k8s/namespaces/kube-system/endpoints/default-http-backend
+kube-dns,k8s.io/Endpoints,gemini-poc-486906,me-central1,//container.googleapis.com/projects/gemini-poc-486906/locations/me-central1/clusters/demo-gk1/k8s/namespaces/kube-system/endpoints/kube-dns
+metrics-server,k8s.io/Endpoints,gemini-poc-486906,me-central1,//container.googleapis.com/projects/gemini-poc-486906/locations/me-central1/clusters/demo-gk1/k8s/namespaces/kube-system/endpoints/metrics-server

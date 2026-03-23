@@ -1,0 +1,2 @@
+ResourceName,AssetType,ProjectID,Region,FullResourcePath
+gke-demo-gk1-pods-4db67088,networkconnectivity.googleapis.com/InternalRange,gemini-poc-486906,global,//networkconnectivity.googleapis.com/projects/gemini-poc-486906/locations/global/internalRanges/gke-demo-gk1-pods-4db67088

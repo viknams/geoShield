@@ -1,0 +1,6 @@
+ResourceName,AssetType,ProjectID,Region,FullResourcePath
+default-route-4719ada0ea2d0350,compute.googleapis.com/Route,gemini-poc-486906,global,//compute.googleapis.com/projects/gemini-poc-486906/global/routes/default-route-4719ada0ea2d0350
+default-route-r-1b426446875fdddc,compute.googleapis.com/Route,gemini-poc-486906,global,//compute.googleapis.com/projects/gemini-poc-486906/global/routes/default-route-r-1b426446875fdddc
+default-route-r-45a3f2d5fb219d88,compute.googleapis.com/Route,gemini-poc-486906,global,//compute.googleapis.com/projects/gemini-poc-486906/global/routes/default-route-r-45a3f2d5fb219d88
+peering-route-4664e9538d277699,compute.googleapis.com/Route,gemini-poc-486906,global,//compute.googleapis.com/projects/gemini-poc-486906/global/routes/peering-route-4664e9538d277699
+peering-route-ab01fd0bc74cd2ff,compute.googleapis.com/Route,gemini-poc-486906,global,//compute.googleapis.com/projects/gemini-poc-486906/global/routes/peering-route-ab01fd0bc74cd2ff

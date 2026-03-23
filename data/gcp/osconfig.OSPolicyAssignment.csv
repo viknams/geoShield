@@ -1,0 +1,2 @@
+ResourceName,AssetType,ProjectID,Region,FullResourcePath
+goog-ops-agent-v2-template-1-5-0-me-central1-b,osconfig.googleapis.com/OSPolicyAssignment,gemini-poc-486906,me-central1-b,//osconfig.googleapis.com/projects/812405213898/locations/me-central1-b/osPolicyAssignments/goog-ops-agent-v2-template-1-5-0-me-central1-b

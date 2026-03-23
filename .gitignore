@@ -39,7 +39,8 @@ build/
 # Project specific
 output/
 data/gcp_old/
-data/gcp/
+
+
 # If data/gcp/*.csv are meant to be templates or input, we keep them. 
 # But usually generated CSVs should be ignored.
 # data/gcp/*.csv

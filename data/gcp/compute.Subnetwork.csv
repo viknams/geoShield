@@ -1,0 +1,2 @@
+ResourceName,AssetType,ProjectID,Region,FullResourcePath
+middle-east,compute.googleapis.com/Subnetwork,gemini-poc-486906,me-central1,//compute.googleapis.com/projects/gemini-poc-486906/regions/me-central1/subnetworks/middle-east

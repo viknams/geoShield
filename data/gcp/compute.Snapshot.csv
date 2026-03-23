@@ -1,0 +1,4 @@
+ResourceName,AssetType,ProjectID,Region,FullResourcePath
+demo-vm1-me-central1-b-20260323081247-qixzp1nj,compute.googleapis.com/Snapshot,gemini-poc-486906,eu,//compute.googleapis.com/projects/gemini-poc-486906/global/snapshots/demo-vm1-me-central1-b-20260323081247-qixzp1nj
+demo-vm3-me-central1-b-20260323081247-x9p9nhve,compute.googleapis.com/Snapshot,gemini-poc-486906,eu,//compute.googleapis.com/projects/gemini-poc-486906/global/snapshots/demo-vm3-me-central1-b-20260323081247-x9p9nhve
+demo-vm4-me-central1-b-20260323081247-mgf8nt2l,compute.googleapis.com/Snapshot,gemini-poc-486906,eu,//compute.googleapis.com/projects/gemini-poc-486906/global/snapshots/demo-vm4-me-central1-b-20260323081247-mgf8nt2l

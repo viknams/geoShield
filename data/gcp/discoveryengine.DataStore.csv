@@ -1,0 +1,4 @@
+ResourceName,AssetType,ProjectID,Region,FullResourcePath
+cloud-storgae_1770634436501,discoveryengine.googleapis.com/DataStore,gemini-poc-486906,global,//discoveryengine.googleapis.com/projects/812405213898/locations/global/collections/default_collection/dataStores/cloud-storgae_1770634436501
+gcs-drive-content_1770634884703,discoveryengine.googleapis.com/DataStore,gemini-poc-486906,global,//discoveryengine.googleapis.com/projects/812405213898/locations/global/collections/default_collection/dataStores/gcs-drive-content_1770634884703
+gcs_1770634773398,discoveryengine.googleapis.com/DataStore,gemini-poc-486906,global,//discoveryengine.googleapis.com/projects/812405213898/locations/global/collections/default_collection/dataStores/gcs_1770634773398

@@ -1,0 +1,2 @@
+ResourceName,AssetType,ProjectID,Region,FullResourcePath
+demo-vpc-ip-range,compute.googleapis.com/GlobalAddress,gemini-poc-486906,global,//compute.googleapis.com/projects/gemini-poc-486906/global/addresses/demo-vpc-ip-range

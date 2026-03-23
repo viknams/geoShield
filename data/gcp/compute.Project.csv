@@ -1,0 +1,2 @@
+ResourceName,AssetType,ProjectID,Region,FullResourcePath
+gemini-poc-486906,compute.googleapis.com/Project,gemini-poc-486906,global,//compute.googleapis.com/projects/gemini-poc-486906

@@ -1,0 +1,3 @@
+ResourceName,AssetType,ProjectID,Region,FullResourcePath
+_Default,logging.googleapis.com/LogBucket,gemini-poc-486906,global,//logging.googleapis.com/projects/812405213898/locations/global/buckets/_Default
+_Required,logging.googleapis.com/LogBucket,gemini-poc-486906,global,//logging.googleapis.com/projects/812405213898/locations/global/buckets/_Required

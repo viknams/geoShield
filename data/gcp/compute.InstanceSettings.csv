@@ -1,0 +1,4 @@
+ResourceName,AssetType,ProjectID,Region,FullResourcePath
+InstanceSettings,compute.googleapis.com/InstanceSettings,gemini-poc-486906,me-central1-a,//compute.googleapis.com/projects/gemini-poc-486906/zones/me-central1-a/instanceSettings/InstanceSettings
+InstanceSettings,compute.googleapis.com/InstanceSettings,gemini-poc-486906,me-central1-b,//compute.googleapis.com/projects/gemini-poc-486906/zones/me-central1-b/instanceSettings/InstanceSettings
+InstanceSettings,compute.googleapis.com/InstanceSettings,gemini-poc-486906,me-central1-c,//compute.googleapis.com/projects/gemini-poc-486906/zones/me-central1-c/instanceSettings/InstanceSettings

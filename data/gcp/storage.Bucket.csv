@@ -1,0 +1,6 @@
+ResourceName,AssetType,ProjectID,Region,FullResourcePath
+812405213898_978666078_us_import_content_with_faq_csv,storage.googleapis.com/Bucket,gemini-poc-486906,us,//storage.googleapis.com/812405213898_978666078_us_import_content_with_faq_csv
+demo-bucket-xyz1,storage.googleapis.com/Bucket,gemini-poc-486906,me-central1,//storage.googleapis.com/demo-bucket-xyz1
+drive-content-local,storage.googleapis.com/Bucket,gemini-poc-486906,us,//storage.googleapis.com/drive-content-local
+dummy-poc,storage.googleapis.com/Bucket,gemini-poc-486906,us,//storage.googleapis.com/dummy-poc
+run-sources-gemini-poc-486906-us-central1,storage.googleapis.com/Bucket,gemini-poc-486906,us-central1,//storage.googleapis.com/run-sources-gemini-poc-486906-us-central1

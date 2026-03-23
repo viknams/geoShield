@@ -1,0 +1,3 @@
+ResourceName,AssetType,ProjectID,Region,FullResourcePath
+my-sql-demo1,sqladmin.googleapis.com/Instance,gemini-poc-486906,me-central1,//cloudsql.googleapis.com/projects/gemini-poc-486906/instances/my-sql-demo1
+pgsql-demo,sqladmin.googleapis.com/Instance,gemini-poc-486906,us-central1,//cloudsql.googleapis.com/projects/gemini-poc-486906/instances/pgsql-demo

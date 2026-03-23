@@ -1,0 +1,5 @@
+ResourceName,AssetType,ProjectID,Region,FullResourcePath
+gcp-critical-pods,k8s.io/ResourceQuota,gemini-poc-486906,me-central1,//container.googleapis.com/projects/gemini-poc-486906/locations/me-central1/clusters/demo-gk1/k8s/namespaces/gke-managed-cim/resourcequotas/gcp-critical-pods
+gcp-critical-pods,k8s.io/ResourceQuota,gemini-poc-486906,me-central1,//container.googleapis.com/projects/gemini-poc-486906/locations/me-central1/clusters/demo-gk1/k8s/namespaces/gke-managed-parallelstorecsi/resourcequotas/gcp-critical-pods
+gcp-critical-pods,k8s.io/ResourceQuota,gemini-poc-486906,me-central1,//container.googleapis.com/projects/gemini-poc-486906/locations/me-central1/clusters/demo-gk1/k8s/namespaces/gke-managed-system/resourcequotas/gcp-critical-pods
+gcp-critical-pods,k8s.io/ResourceQuota,gemini-poc-486906,me-central1,//container.googleapis.com/projects/gemini-poc-486906/locations/me-central1/clusters/demo-gk1/k8s/namespaces/kube-system/resourcequotas/gcp-critical-pods

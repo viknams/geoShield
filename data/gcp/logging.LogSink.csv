@@ -1,0 +1,3 @@
+ResourceName,AssetType,ProjectID,Region,FullResourcePath
+_Default,logging.googleapis.com/LogSink,gemini-poc-486906,global,//logging.googleapis.com/projects/812405213898/sinks/_Default
+_Required,logging.googleapis.com/LogSink,gemini-poc-486906,global,//logging.googleapis.com/projects/812405213898/sinks/_Required

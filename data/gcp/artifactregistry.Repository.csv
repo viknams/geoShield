@@ -1,0 +1,2 @@
+ResourceName,AssetType,ProjectID,Region,FullResourcePath
+cloud-run-source-deploy,artifactregistry.googleapis.com/Repository,gemini-poc-486906,us-central1,//artifactregistry.googleapis.com/projects/gemini-poc-486906/locations/us-central1/repositories/cloud-run-source-deploy

@@ -1,0 +1,5 @@
+ResourceName,AssetType,ProjectID,Region,FullResourcePath
+demo-vm1,compute.googleapis.com/Disk,gemini-poc-486906,me-central1-b,//compute.googleapis.com/projects/gemini-poc-486906/zones/me-central1-b/disks/demo-vm1
+demo-vm2,compute.googleapis.com/Disk,gemini-poc-486906,me-central1-b,//compute.googleapis.com/projects/gemini-poc-486906/zones/me-central1-b/disks/demo-vm2
+demo-vm3,compute.googleapis.com/Disk,gemini-poc-486906,me-central1-b,//compute.googleapis.com/projects/gemini-poc-486906/zones/me-central1-b/disks/demo-vm3
+demo-vm4,compute.googleapis.com/Disk,gemini-poc-486906,me-central1-b,//compute.googleapis.com/projects/gemini-poc-486906/zones/me-central1-b/disks/demo-vm4

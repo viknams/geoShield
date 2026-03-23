@@ -1,0 +1,12 @@
+ResourceName,AssetType,ProjectID,Region,FullResourcePath
+enterprise-multishare-rwx,storage.k8s.io/StorageClass,gemini-poc-486906,me-central1,//container.googleapis.com/projects/gemini-poc-486906/locations/me-central1/clusters/demo-gk1/k8s/storage.k8s.io/storageclasses/enterprise-multishare-rwx
+enterprise-rwx,storage.k8s.io/StorageClass,gemini-poc-486906,me-central1,//container.googleapis.com/projects/gemini-poc-486906/locations/me-central1/clusters/demo-gk1/k8s/storage.k8s.io/storageclasses/enterprise-rwx
+parallelstore-rwx,storage.k8s.io/StorageClass,gemini-poc-486906,me-central1,//container.googleapis.com/projects/gemini-poc-486906/locations/me-central1/clusters/demo-gk1/k8s/storage.k8s.io/storageclasses/parallelstore-rwx
+premium-rwo,storage.k8s.io/StorageClass,gemini-poc-486906,me-central1,//container.googleapis.com/projects/gemini-poc-486906/locations/me-central1/clusters/demo-gk1/k8s/storage.k8s.io/storageclasses/premium-rwo
+premium-rwx,storage.k8s.io/StorageClass,gemini-poc-486906,me-central1,//container.googleapis.com/projects/gemini-poc-486906/locations/me-central1/clusters/demo-gk1/k8s/storage.k8s.io/storageclasses/premium-rwx
+regional-rwx,storage.k8s.io/StorageClass,gemini-poc-486906,me-central1,//container.googleapis.com/projects/gemini-poc-486906/locations/me-central1/clusters/demo-gk1/k8s/storage.k8s.io/storageclasses/regional-rwx
+standard,storage.k8s.io/StorageClass,gemini-poc-486906,me-central1,//container.googleapis.com/projects/gemini-poc-486906/locations/me-central1/clusters/demo-gk1/k8s/storage.k8s.io/storageclasses/standard
+standard-rwo,storage.k8s.io/StorageClass,gemini-poc-486906,me-central1,//container.googleapis.com/projects/gemini-poc-486906/locations/me-central1/clusters/demo-gk1/k8s/storage.k8s.io/storageclasses/standard-rwo
+standard-rwo-regional,storage.k8s.io/StorageClass,gemini-poc-486906,me-central1,//container.googleapis.com/projects/gemini-poc-486906/locations/me-central1/clusters/demo-gk1/k8s/storage.k8s.io/storageclasses/standard-rwo-regional
+standard-rwx,storage.k8s.io/StorageClass,gemini-poc-486906,me-central1,//container.googleapis.com/projects/gemini-poc-486906/locations/me-central1/clusters/demo-gk1/k8s/storage.k8s.io/storageclasses/standard-rwx
+zonal-rwx,storage.k8s.io/StorageClass,gemini-poc-486906,me-central1,//container.googleapis.com/projects/gemini-poc-486906/locations/me-central1/clusters/demo-gk1/k8s/storage.k8s.io/storageclasses/zonal-rwx
