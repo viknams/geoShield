@@ -264,10 +264,19 @@ func mapFromUnifiedResource(serviceType string, header []string, row []string) (
 	}
 	resName := m["ResourceName"]
 	projectID := m["ProjectID"]
-	region := m["Region"]
+	
+	newResName := "mg-" + resName
+
+	region := m["NewRegion"]
+	if region == "" {
+		region = m["Region"]
+	}
 	if region == "" || region == "global" {
 		region = "us-east1" // default placeholder
 	}
+	
+	newSubnet := m["NewSubnet"]
+
 	// Use stable release tag for Fabric modules instead of AssetType
 	fastRef := "v34.1.0"
 
@@ -283,22 +292,30 @@ func mapFromUnifiedResource(serviceType string, header []string, row []string) (
 				{Name: "subnet-delhi", Region: "asia-south2", CIDR: "10.1.10.0/26"},
 			}
 		} else {
-			subnets = []Subnet{{Name: resName + "-sub", Region: region, CIDR: "10.0.0.0/24"}}
+			cidr := "10.0.0.0/24"
+			if newSubnet != "" {
+				cidr = newSubnet
+			}
+			subnets = []Subnet{{Name: newResName + "-sub", Region: region, CIDR: cidr}}
 		}
-		return "vpc", VPCData{projectID, resName, region, fastRef, subnets}, resName
+		return "vpc", VPCData{projectID, newResName, region, fastRef, subnets}, newResName
 	case "storage.Bucket":
-		return "gcs", GCSData{projectID, region, resName, "US", true, fastRef}, resName
+		return "gcs", GCSData{projectID, region, newResName, "US", true, fastRef}, newResName
 	case "compute.Instance":
-		return "compute-vm", VMData{projectID, region, resName, region + "-a", "default", "default", "e2-medium", "debian-cloud/debian-11", fastRef}, resName
+		zone := region + "-a"
+		if m["NewRegion"] != "" {
+			zone = region + "-a"
+		}
+		return "compute-vm", VMData{projectID, region, newResName, zone, "default", "default", "e2-medium", "debian-cloud/debian-11", fastRef}, newResName
 	case "container.Cluster":
-		return "gke-cluster", GKEData{projectID, region, resName, "default", "default", fastRef}, resName
+		return "gke-cluster", GKEData{projectID, region, newResName, "default", "default", fastRef}, newResName
 	case "sqladmin.Instance":
-		return "cloudsql-instance", SQLData{projectID, region, resName, "default", "POSTGRES_14", "db-f1-micro", fastRef}, resName
+		return "cloudsql-instance", SQLData{projectID, region, newResName, "default", "POSTGRES_14", "db-f1-micro", fastRef}, newResName
 	case "compute.ForwardingRule":
-		return "net-lb-app-ext", LBData{projectID, region, resName, fastRef}, resName
+		return "net-lb-app-ext", LBData{projectID, region, newResName, fastRef}, newResName
 	default:
 		// Map any other selected resource to the fallback generic module
-		return "fallback", FallbackData{projectID, region, resName, fastRef, serviceType}, resName
+		return "fallback", FallbackData{projectID, region, newResName, fastRef, serviceType}, newResName
 	}
 }
 

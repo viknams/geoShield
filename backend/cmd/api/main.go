@@ -9,6 +9,7 @@ import (
 	"example.com/geoShield/backend/internal/generator"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/joho/godotenv"
 )
 
 func main() {
@@ -22,6 +23,8 @@ func main() {
 	if filepath.Base(cwd) == "backend" {
 		rootDir = filepath.Dir(cwd)
 	}
+
+	_ = godotenv.Load(filepath.Join(rootDir, ".env"))
 
 	h := &api.APIHandler{
 		DataDir:          filepath.Join(rootDir, "data", "gcp"),

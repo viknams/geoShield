@@ -2,6 +2,19 @@
 
 import { useState, useEffect } from "react";
 
+const GCP_REGIONS = [
+  "asia-east1", "asia-east2", "asia-northeast1", "asia-northeast2", "asia-northeast3",
+  "asia-south1", "asia-south2", "asia-southeast1", "asia-southeast2",
+  "australia-southeast1", "australia-southeast2",
+  "europe-central2", "europe-north1", "europe-southwest1",
+  "europe-west1", "europe-west2", "europe-west3", "europe-west4", "europe-west6", "europe-west8", "europe-west9", "europe-west12",
+  "me-central1", "me-central2", "me-west1",
+  "northamerica-northeast1", "northamerica-northeast2",
+  "southamerica-east1", "southamerica-west1",
+  "us-central1", "us-east1", "us-east4", "us-east5",
+  "us-south1", "us-west1", "us-west2", "us-west3", "us-west4"
+];
+
 export default function Home() {
   const [projectID, setProjectID] = useState("");
   const [impersonateEmail, setImpersonateEmail] = useState("");
@@ -14,8 +27,38 @@ export default function Home() {
   const [isAuthPolling, setIsAuthPolling] = useState(false);
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({});
 
+  const [bulkRegion, setBulkRegion] = useState("");
+  const [bulkSubnet, setBulkSubnet] = useState("");
+
   const toggleSection = (sectionKey: string) => {
     setExpandedSections((prev) => ({ ...prev, [sectionKey]: !prev[sectionKey] }));
+  };
+
+  const applyBulkUpdate = () => {
+    setActiveResources(prev => {
+      const updated = { ...prev };
+      for (const serviceKey in updated) {
+        const rows = [...updated[serviceKey]];
+        if (rows.length > 0) {
+          const header = rows[0];
+          const regionIdx = header.indexOf("NewRegion");
+          const subnetIdx = header.indexOf("NewSubnet");
+          
+          for (let i = 1; i < rows.length; i++) {
+            rows[i] = [...rows[i]];
+            if (regionIdx !== -1 && bulkRegion) {
+              rows[i][regionIdx] = bulkRegion;
+            }
+            if (subnetIdx !== -1 && bulkSubnet) {
+              rows[i][subnetIdx] = bulkSubnet;
+            }
+          }
+        }
+        updated[serviceKey] = rows;
+      }
+      return updated;
+    });
+    setStatus("Bulk update applied to active resources.");
   };
 
   const fetchResources = async () => {
@@ -33,6 +76,23 @@ export default function Home() {
       const res = await fetch(`http://localhost:8080/api/gcp/resources/active`);
       const data = await res.json();
       if (data && !data.error) {
+        for (const key in data) {
+          const rows = data[key];
+          if (rows.length > 0) {
+            const header = rows[0];
+            let regionIdx = header.indexOf("NewRegion");
+            let subnetIdx = header.indexOf("NewSubnet");
+            
+            if (regionIdx === -1) {
+              header.push("NewRegion");
+              for (let i = 1; i < rows.length; i++) rows[i].push("");
+            }
+            if (subnetIdx === -1) {
+              header.push("NewSubnet");
+              for (let i = 1; i < rows.length; i++) rows[i].push("");
+            }
+          }
+        }
         setActiveResources(data);
       } else {
         setActiveResources({});
@@ -41,6 +101,17 @@ export default function Home() {
       console.error("Failed to fetch active resources", e);
       setActiveResources({});
     }
+  };
+
+  const updateActiveResource = (serviceKey: string, rowIndex: number, colIndex: number, value: string) => {
+    setActiveResources(prev => {
+      const updated = { ...prev };
+      const rows = [...(updated[serviceKey] || [])];
+      rows[rowIndex] = [...rows[rowIndex]];
+      rows[rowIndex][colIndex] = value;
+      updated[serviceKey] = rows;
+      return updated;
+    });
   };
 
   const removeActiveResource = (serviceKey: string, rowIndex: number) => {
@@ -68,14 +139,24 @@ export default function Home() {
   const addActiveResource = (serviceKey: string, resourceRow: string[]) => {
     setActiveResources(prev => {
       const updated = { ...prev };
+      let header = [];
       if (!updated[serviceKey]) {
-        const discoverHeader = resources[serviceKey]?.[0] || [];
-        updated[serviceKey] = [discoverHeader];
+        header = [...(resources[serviceKey]?.[0] || [])];
+        if (!header.includes("NewRegion")) header.push("NewRegion");
+        if (!header.includes("NewSubnet")) header.push("NewSubnet");
+        updated[serviceKey] = [header];
+      } else {
+        header = updated[serviceKey][0];
       }
-      const headerLen = updated[serviceKey][0].length;
+      
       const newRow = [...resourceRow];
-      while (newRow.length < headerLen) {
-        newRow.push("Manual");
+      for (let i = newRow.length; i < header.length; i++) {
+        const colName = header[i];
+        if (colName === "NewRegion" || colName === "NewSubnet") {
+          newRow.push("");
+        } else {
+          newRow.push("Manual");
+        }
       }
       
       const exists = updated[serviceKey].some((r, i) => i > 0 && r[0] === newRow[0]);
@@ -88,10 +169,6 @@ export default function Home() {
 
   const handleAction = async (endpoint: string, method = "POST") => {
     // Session / Cache mechanism to avoid hitting API unnecessarily
-    if (endpoint === "plan" && planOutput) {
-      setViewMode("plan");
-      return;
-    }
     if (endpoint === "discover" && Object.keys(resources).length > 0) {
       setViewMode("discovered");
       return;
@@ -378,10 +455,46 @@ export default function Home() {
                     <span className="w-1.5 h-6 bg-emerald-500 rounded-full" />
                     Infrastructure Usage Analysis
                   </h2>
-                  {/* ADD RESOURCE DROPDOWN */}
-                  <div className="flex items-center gap-2">
+                  
+                  {/* BULK UPDATE & ADD RESOURCE */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex items-center gap-2 bg-emerald-50 px-3 py-2 rounded-lg border border-emerald-100">
+                      <span className="text-[10px] font-bold text-emerald-700 uppercase tracking-widest">Bulk Update</span>
+                      <select
+                        className="bg-white border border-slate-200 text-xs px-2 py-1 rounded focus:outline-none focus:ring-1 focus:ring-emerald-500 min-w-[120px]"
+                        value={bulkRegion}
+                        onChange={(e) => setBulkRegion(e.target.value)}
+                      >
+                        <option value="">Set Region...</option>
+                        {GCP_REGIONS.map(r => <option key={r} value={r}>{r}</option>)}
+                      </select>
+                      <input
+                        type="text"
+                        placeholder="Set Subnet CIDR..."
+                        list="subnet-presets"
+                        value={bulkSubnet}
+                        onChange={(e) => setBulkSubnet(e.target.value)}
+                        className="w-[120px] bg-white border border-slate-200 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500 font-mono text-emerald-700"
+                      />
+                      <datalist id="subnet-presets">
+                        <option value="10.0.0.0/24" />
+                        <option value="10.1.1.0/26" />
+                        <option value="10.1.2.0/26" />
+                        <option value="10.1.5.0/26" />
+                        <option value="10.1.10.0/26" />
+                        <option value="10.2.1.0/26" />
+                      </datalist>
+                      <button
+                        onClick={applyBulkUpdate}
+                        disabled={!bulkRegion && !bulkSubnet}
+                        className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1 rounded text-xs font-bold transition-all disabled:opacity-50"
+                      >
+                        Apply All
+                      </button>
+                    </div>
+
                     <select 
-                      className="bg-white border border-slate-200 text-xs px-3 py-2 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 min-w-[200px]"
+                      className="bg-white border border-slate-200 text-xs px-3 py-2 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 min-w-[180px]"
                       onChange={(e) => {
                         if (!e.target.value) return;
                         const [svc, rowIdx] = e.target.value.split("::");
@@ -397,7 +510,7 @@ export default function Home() {
                          <optgroup key={svc} label={svc}>
                            {rows.slice(1).map((row, i) => (
                              <option key={`${svc}::${i+1}`} value={`${svc}::${i+1}`}>
-                               {row[0]} {/* assuming row[0] is the primary identifier */}
+                               {row[0]}
                              </option>
                            ))}
                          </optgroup>
@@ -447,17 +560,48 @@ export default function Home() {
                             <tbody className="divide-y divide-slate-50">
                               {rows.slice(1).map((row, i) => (
                                 <tr key={i} className="hover:bg-emerald-50/30 transition-colors">
-                                  {row.map((cell, j) => (
-                                    <td
-                                      key={j}
-                                      className={`px-6 py-4 font-mono leading-relaxed ${
-                                        cell === "High" ? "text-orange-600 font-bold" : 
-                                        cell === "Normal" ? "text-blue-600" : "text-slate-500"
-                                      }`}
-                                    >
-                                      {cell}
-                                    </td>
-                                  ))}
+                                  {row.map((cell, j) => {
+                                    const headerName = rows[0][j];
+                                    if (headerName === "NewRegion") {
+                                      return (
+                                        <td key={j} className="px-6 py-4">
+                                          <select
+                                            value={cell}
+                                            onChange={(e) => updateActiveResource(service, i + 1, j, e.target.value)}
+                                            className="w-full bg-white border border-slate-200 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500 font-mono text-emerald-700"
+                                          >
+                                            <option value="">Original</option>
+                                            {GCP_REGIONS.map(r => <option key={r} value={r}>{r}</option>)}
+                                          </select>
+                                        </td>
+                                      )
+                                    }
+                                    if (headerName === "NewSubnet") {
+                                      return (
+                                        <td key={j} className="px-6 py-4">
+                                          <input 
+                                            type="text" 
+                                            value={cell} 
+                                            list="subnet-presets"
+                                            onChange={(e) => updateActiveResource(service, i + 1, j, e.target.value)}
+                                            placeholder={`Enter ${headerName}`}
+                                            className="w-full bg-white border border-slate-200 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500 font-mono text-emerald-700"
+                                          />
+                                        </td>
+                                      )
+                                    }
+                                    return (
+                                      <td
+                                        key={j}
+                                        className={`px-6 py-4 font-mono leading-relaxed ${
+                                          cell === "High" ? "text-orange-600 font-bold" : 
+                                          cell === "Normal" ? "text-blue-600" : "text-slate-500"
+                                        }`}
+                                      >
+                                        {cell}
+                                      </td>
+                                    )
+                                  })}
                                   <td className="px-6 py-4 text-right">
                                     <button 
                                       onClick={(e) => { e.stopPropagation(); removeActiveResource(service, i + 1); }}
