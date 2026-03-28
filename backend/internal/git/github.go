@@ -102,3 +102,14 @@ func (s *GitHubService) CreatePullRequest(ctx context.Context, branchName, baseB
 
 	return pr, nil
 }
+
+func (s *GitHubService) CreatePRComment(ctx context.Context, prNumber int, body string) (*github.IssueComment, error) {
+	comment := &github.IssueComment{
+		Body: github.String(body),
+	}
+	newComment, _, err := s.client.Issues.CreateComment(ctx, s.owner, s.repo, prNumber, comment)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create PR comment: %w", err)
+	}
+	return newComment, nil
+}

@@ -55,6 +55,7 @@ func main() {
 	r.GET("/api/gcp/resources/active", h.ListActiveResources)
 	r.POST("/api/gcp/filter", h.FilterGCP)
 	r.POST("/api/gcp/plan", h.PlanTerraform)
+	r.POST("/api/gcp/apply", h.ApplyTerraform)
 
 	port := os.Getenv("PORT")
 	if port == "" {

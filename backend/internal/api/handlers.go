@@ -427,3 +427,97 @@ func (h *APIHandler) PlanTerraform(c *gin.Context) {
 	log.Printf("Completed planning for %d resources.", len(config.Resources))
 	c.JSON(http.StatusOK, gin.H{"plan_output": combinedOutput})
 }
+
+func (h *APIHandler) ApplyTerraform(c *gin.Context) {
+	var payload map[string][][]string
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON payload"})
+		return
+	}
+
+	projectID := c.Query("project")
+	if projectID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "project ID is required"})
+		return
+	}
+
+	config := generator.Config{
+		Cloud:       "gcp",
+		OrgName:     "wayfair",
+		FolderName:  "vikram-gcp-resources",
+		ProjectName: projectID,
+		PathPattern: "{{.FolderName}}/{{.Type}}/{{.Name}}",
+	}
+
+	for serviceType, rows := range payload {
+		if len(rows) < 2 {
+			continue
+		}
+		header := rows[0]
+		for i := 1; i < len(rows); i++ {
+			row := rows[i]
+			mappedType, resData, resName := mapFromUnifiedResource(serviceType, header, row)
+			if mappedType == "" {
+				continue // Skip unsupported
+			}
+
+			config.Resources = append(config.Resources, generator.Resource{
+				Type: mappedType,
+				Name: resName,
+				Data: resData,
+			})
+		}
+	}
+
+	log.Printf("Generating Terraform for %d resources before applying...", len(config.Resources))
+	_, err := h.GenSvc.Generate(config, h.OutputDir)
+	if err != nil {
+		log.Printf("Error generating terraform code: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to generate code: %v", err)})
+		return
+	}
+
+	var combinedOutput string
+	for i, res := range config.Resources {
+		path := filepath.Join(h.OutputDir, config.FolderName, res.Type, res.Name)
+
+		displayType := res.Type
+		if displayType == "fallback" {
+			if fbData, ok := res.Data.(FallbackData); ok {
+				displayType = fbData.ServiceType
+			} else {
+				displayType = "generic-resource"
+			}
+		}
+
+		log.Printf("[%d/%d] Initializing Terraform for %s: %s", i+1, len(config.Resources), displayType, res.Name)
+		initCmd := exec.Command("terraform", "init", "-no-color")
+		initCmd.Dir = path
+		initOutput, err := initCmd.CombinedOutput()
+		if err != nil {
+			log.Printf("-> Terraform init failed for %s: %v", res.Name, err)
+			combinedOutput += fmt.Sprintf("=== Init Error for %s: %s ===\n%s\n", displayType, res.Name, string(initOutput))
+			continue
+		}
+
+		log.Printf("[%d/%d] Applying Terraform for %s: %s", i+1, len(config.Resources), displayType, res.Name)
+		applyCmd := exec.Command("terraform", "apply", "-auto-approve", "-no-color")
+		applyCmd.Dir = path
+		output, err := applyCmd.CombinedOutput()
+
+		combinedOutput += fmt.Sprintf("=== Apply for %s: %s ===\n%s\n", displayType, res.Name, string(output))
+		if err != nil {
+			log.Printf("-> Terraform apply failed for %s: %v", res.Name, err)
+			combinedOutput += fmt.Sprintf("Error: %v\n", err)
+		} else {
+			log.Printf("-> Terraform apply succeeded for %s", res.Name)
+		}
+	}
+	
+	if len(config.Resources) == 0 {
+		combinedOutput = "No supported resources selected for applying."
+	}
+
+	log.Printf("Completed applying for %d resources.", len(config.Resources))
+	c.JSON(http.StatusOK, gin.H{"apply_output": combinedOutput})
+}
