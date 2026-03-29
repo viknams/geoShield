@@ -14,7 +14,7 @@ import (
 )
 
 func main() {
-	files, err := filepath.Glob("../data/gcp/active-resources/*.csv")
+	files, err := filepath.Glob(filepath.Join("..", os.Getenv("DATA_DIR_GCP"), os.Getenv("TERRAFORM_CRITICAL_RESOURCE"), "*.csv"))
 	if err != nil {
 		log.Fatal(err)
 	}

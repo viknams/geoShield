@@ -56,13 +56,13 @@ type GKEData struct {
 }
 
 type SQLData struct {
-	ProjectID  string
-	Region     string
-	DBName     string
-	Network    string
-	DBVersion  string
-	Tier       string
-	FastRef    string
+	ProjectID string
+	Region    string
+	DBName    string
+	Network   string
+	DBVersion string
+	Tier      string
+	FastRef   string
 }
 
 type LBData struct {
@@ -88,9 +88,9 @@ func main() {
 	}
 
 	config := generator.Config{
-		Cloud:       "gcp",
-		OrgName:     "wayfair",
-		FolderName:  "vikram-gcp-resources",
+		Cloud:       os.Getenv("TERRAFORM_CLOUD"),
+		OrgName:     os.Getenv("TERRAFORM_ORG_NAME"),
+		FolderName:  os.Getenv("TERRAFORM_FOLDER_NAME"),
 		ProjectName: os.Getenv("GCP_PROJECT"),
 		PathPattern: "{{.FolderName}}/{{.Type}}/{{.Name}}",
 	}

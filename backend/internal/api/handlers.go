@@ -1,9 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/csv"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -12,23 +14,32 @@ import (
 	"strings"
 	"sync"
 
+	"cloud.google.com/go/storage"
+	"google.golang.org/api/iterator"
+
 	"example.com/geoShield/backend/internal/discovery"
 	"example.com/geoShield/backend/internal/generator"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 type APIHandler struct {
-	DiscoverySvc *discovery.DiscoveryService
-	FilterSvc    *discovery.FilterService
-	GenSvc       *generator.Generator
-	DataDir      string
-	OutputDir    string
-	ImpersonateEmail   string
-	ServiceAccountJSON string
-	
+	DiscoverySvc              *discovery.DiscoveryService
+	FilterSvc                 *discovery.FilterService
+	GenSvc                    *generator.Generator
+	DataDir                   string
+	OutputDir                 string
+	ImpersonateEmail          string
+	ServiceAccountJSON        string
+	TerraformStateBucket      string
+	TerraformCloud            string
+	TerraformOrgName          string
+	TerraformFolderName       string
+	TerraformCriticalResource string
+
 	// Track auth status
-	mu          sync.RWMutex
-	authStatus  string
+	mu         sync.RWMutex
+	authStatus string
 }
 
 func (h *APIHandler) AuthGCP(c *gin.Context) {
@@ -72,7 +83,7 @@ func (h *APIHandler) AuthGCP(c *gin.Context) {
 
 	// Trigger gcloud auth in a separate process
 	cmd := exec.Command("gcloud", "auth", "application-default", "login", "--project", projectID)
-	
+
 	go func() {
 		err := cmd.Run()
 		h.mu.Lock()
@@ -112,7 +123,10 @@ func (h *APIHandler) DiscoverGCP(c *gin.Context) {
 		return
 	}
 
-	if err := svc.Discover(ctx, h.DataDir); err != nil {
+	// Construct the correct, project-specific path for discovery output
+	projectDataDir := strings.Replace(h.DataDir, "GCP_PROJECT", projectID, 1)
+	log.Printf("DiscoverGCP: Using data directory: %s", projectDataDir)
+	if err := svc.Discover(ctx, projectDataDir); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("discovery failed: %v", err)})
 		return
 	}
@@ -121,7 +135,23 @@ func (h *APIHandler) DiscoverGCP(c *gin.Context) {
 }
 
 func (h *APIHandler) ListResources(c *gin.Context) {
-	files, _ := filepath.Glob(filepath.Join(h.DataDir, "*.csv"))
+	projectID := c.Query("project")
+	if projectID == "" {
+		// If no project is specified, we can't list resources.
+		c.JSON(http.StatusOK, make(map[string][][]string))
+		return
+	}
+
+	projectDataDir := strings.Replace(h.DataDir, "GCP_PROJECT", projectID, 1)
+	log.Printf("ListResources: Using data directory: %s", projectDataDir)
+	// Ensure the directory exists to prevent silent failures if discovery hasn't run.
+	if _, err := os.Stat(projectDataDir); os.IsNotExist(err) {
+		log.Printf("Discovery data directory does not exist, creating: %s", projectDataDir)
+		os.MkdirAll(projectDataDir, 0755)
+	}
+
+	files, _ := filepath.Glob(filepath.Join(projectDataDir, "*.csv"))
+
 	result := make(map[string][][]string)
 
 	for _, file := range files {
@@ -164,7 +194,10 @@ func (h *APIHandler) FilterGCP(c *gin.Context) {
 		return
 	}
 
-	if err := svc.FilterAndConsolidate(ctx, h.DataDir); err != nil {
+	// Construct the correct, project-specific path for filtering
+	projectDataDir := strings.Replace(h.DataDir, "GCP_PROJECT", projectID, 1)
+	log.Printf("FilterGCP: Using data directory: %s", projectDataDir)
+	if err := svc.FilterAndConsolidate(ctx, projectDataDir); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("filtering failed: %v", err)})
 		return
 	}
@@ -173,13 +206,30 @@ func (h *APIHandler) FilterGCP(c *gin.Context) {
 }
 
 func (h *APIHandler) ListActiveResources(c *gin.Context) {
-	activeDir := filepath.Join(h.DataDir, "active-resources")
-	files, _ := filepath.Glob(filepath.Join(activeDir, "*.csv"))
+	projectID := c.Query("project")
+	if projectID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "project ID is required"})
+		return
+	}
+
+	// Construct the correct, project-specific path
+	projectDataDir := strings.Replace(h.DataDir, "GCP_PROJECT", projectID, 1)
+	log.Printf("ListActiveResources: Using data directory: %s", projectDataDir)
+	activeDir := filepath.Join(projectDataDir, h.TerraformCriticalResource)
+	log.Printf("ListActiveResources: Looking for active resources in: %s", activeDir)
+
+	// Ensure the directory exists to prevent silent failures.
+	if _, err := os.Stat(activeDir); os.IsNotExist(err) {
+		log.Printf("Active resources directory does not exist, creating: %s", activeDir)
+		os.MkdirAll(activeDir, 0755)
+	}
+
 	result := make(map[string][][]string)
+	files, _ := filepath.Glob(filepath.Join(activeDir, "*.csv"))
 
 	for _, file := range files {
 		name := strings.TrimSuffix(filepath.Base(file), ".csv")
-		
+
 		f, err := os.Open(file)
 		if err != nil {
 			continue
@@ -198,6 +248,52 @@ func (h *APIHandler) ListActiveResources(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, result)
+}
+
+func (h *APIHandler) ListManagedResources(c *gin.Context) {
+	ctx := context.Background()
+	client, err := storage.NewClient(ctx)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to create storage client: %v", err)})
+		return
+	}
+	defer client.Close()
+
+	bucket := client.Bucket(h.TerraformStateBucket)
+	query := &storage.Query{Prefix: h.TerraformFolderName + "/"}
+
+	managedResources := make(map[string][][]string)
+	it := bucket.Objects(ctx, query)
+	for {
+		attrs, err := it.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to iterate bucket objects: %v", err)})
+			return
+		}
+
+		// Path is like: all-resources/gcs/mg-my-bucket/default.tfstate
+		// We want to extract "gcs" and "mg-my-bucket"
+		parts := strings.Split(attrs.Name, "/")
+		if len(parts) >= 3 {
+			serviceType := parts[1]
+			resourceName := parts[2]
+
+			// Use the original name for display
+			displayName := strings.TrimPrefix(resourceName, "mg-")
+
+			if _, ok := managedResources[serviceType]; !ok {
+				// Create header
+				managedResources[serviceType] = [][]string{{"ResourceName", "Terraform Name", "ServiceType"}}
+			}
+			managedResources[serviceType] = append(managedResources[serviceType], []string{displayName, resourceName, serviceType})
+		}
+	}
+
+	log.Printf("Found %d types of managed resources in state bucket.", len(managedResources))
+	c.JSON(http.StatusOK, managedResources)
 }
 
 type VPCData struct {
@@ -245,13 +341,13 @@ type GKEData struct {
 }
 
 type SQLData struct {
-	ProjectID  string
-	Region     string
-	DBName     string
-	Network    string
-	DBVersion  string
-	Tier       string
-	FastRef    string
+	ProjectID string
+	Region    string
+	DBName    string
+	Network   string
+	DBVersion string
+	Tier      string
+	FastRef   string
 }
 
 type LBData struct {
@@ -278,7 +374,7 @@ func mapFromUnifiedResource(serviceType string, header []string, row []string) (
 	}
 	resName := m["ResourceName"]
 	projectID := m["ProjectID"]
-	
+
 	newResName := "mg-" + resName
 
 	region := m["NewRegion"]
@@ -288,7 +384,7 @@ func mapFromUnifiedResource(serviceType string, header []string, row []string) (
 	if region == "" || region == "global" {
 		region = "us-east1" // default placeholder
 	}
-	
+
 	newSubnet := m["NewSubnet"]
 
 	// Use stable release tag for Fabric modules instead of AssetType
@@ -333,30 +429,47 @@ func mapFromUnifiedResource(serviceType string, header []string, row []string) (
 	}
 }
 
+type PlanPayload struct {
+	Resources   map[string][][]string `json:"resources"`
+	WorkspaceID string                `json:"workspaceId"`
+}
+
 func (h *APIHandler) PlanTerraform(c *gin.Context) {
-	var payload map[string][][]string
+	var payload PlanPayload
 	if err := c.ShouldBindJSON(&payload); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON payload"})
+		// Log the raw body for debugging if JSON binding fails
+		bodyBytes, _ := io.ReadAll(c.Request.Body)
+		log.Printf("Failed to bind JSON payload for plan. Error: %v. Raw body: %s", err, string(bodyBytes))
+		c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes)) // Restore the body
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON payload", "details": err.Error()})
 		return
 	}
 
+	log.Printf("Successfully received and parsed plan payload for %d resource types.", len(payload.Resources))
 	projectID := c.Query("project")
 	if projectID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "project ID is required"})
 		return
 	}
 
+	// --- Start: Ephemeral Workspace ---
+	runID := uuid.New().String()
+	workspaceDir := filepath.Join(h.OutputDir, "run-"+runID)
+	log.Printf("Creating ephemeral workspace: %s", workspaceDir)
+
 	config := generator.Config{
-		Cloud:       "gcp",
-		OrgName:     "wayfair",
-		FolderName:  "vikram-gcp-resources",
+		Cloud:       h.TerraformCloud,
+		OrgName:     h.TerraformOrgName,
+		FolderName:  h.TerraformFolderName,
 		ProjectName: projectID,
-		PathPattern: "{{.FolderName}}/{{.Type}}/{{.Name}}",
+		// PathPattern now generates inside the unique workspace
+		PathPattern:          "{{.FolderName}}/{{.Type}}/{{.Name}}",
+		TerraformStateBucket: h.TerraformStateBucket,
 	}
 
-	for serviceType, rows := range payload {
+	for serviceType, rows := range payload.Resources {
 		if len(rows) < 2 {
-			continue
+			continue // malformed payload for serviceType
 		}
 		header := rows[0]
 		for i := 1; i < len(rows); i++ {
@@ -375,7 +488,7 @@ func (h *APIHandler) PlanTerraform(c *gin.Context) {
 	}
 
 	log.Printf("Generating Terraform for %d resources...", len(config.Resources))
-	_, err := h.GenSvc.Generate(config, h.OutputDir)
+	_, err := h.GenSvc.Generate(config, workspaceDir) // Generate into the unique workspace dir
 	if err != nil {
 		log.Printf("Error generating terraform code: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to generate code: %v", err)})
@@ -384,7 +497,8 @@ func (h *APIHandler) PlanTerraform(c *gin.Context) {
 
 	var combinedOutput string
 	for i, res := range config.Resources {
-		path := filepath.Join(h.OutputDir, config.FolderName, res.Type, res.Name)
+		// Path is now inside the unique workspace
+		path := filepath.Join(workspaceDir, config.FolderName, res.Type, res.Name)
 
 		displayType := res.Type
 		if displayType == "fallback" {
@@ -397,7 +511,11 @@ func (h *APIHandler) PlanTerraform(c *gin.Context) {
 
 		log.Printf("[%d/%d] Initializing Terraform for %s: %s", i+1, len(config.Resources), displayType, res.Name)
 
-		initCmd := exec.Command("terraform", "init", "-no-color")
+		prefix := filepath.Join(config.FolderName, res.Type, res.Name)
+		initCmd := exec.Command("terraform", "init", "-no-color",
+			fmt.Sprintf("-backend-config=bucket=%s", config.TerraformStateBucket),
+			fmt.Sprintf("-backend-config=prefix=%s", prefix),
+		)
 		initCmd.Dir = path
 		initOutput, err := initCmd.CombinedOutput()
 		if err != nil {
@@ -406,18 +524,30 @@ func (h *APIHandler) PlanTerraform(c *gin.Context) {
 			continue
 		}
 
-		log.Printf("[%d/%d] Running Terraform plan for %s: %s", i+1, len(config.Resources), displayType, res.Name)
-		planCmd := exec.Command("terraform", "plan", "-no-color")
+		// --- Start: Plan File Workflow ---
+		log.Printf("[%d/%d] Generating Terraform plan file for %s: %s", i+1, len(config.Resources), displayType, res.Name)
+		planFilePath := filepath.Join(path, "terraform.tfplan")
+		planCmd := exec.Command("terraform", "plan", "-no-color", "-out="+planFilePath)
 		planCmd.Dir = path
-		output, err := planCmd.CombinedOutput()
-
-		combinedOutput += fmt.Sprintf("=== Plan for %s: %s ===\n%s\n", displayType, res.Name, string(output))
+		planOutput, err := planCmd.CombinedOutput()
 		if err != nil {
 			log.Printf("-> Terraform plan failed for %s: %v", res.Name, err)
-			combinedOutput += fmt.Sprintf("Error: %v\n", err)
-		} else {
-			log.Printf("-> Terraform plan succeeded for %s", res.Name)
+			combinedOutput += fmt.Sprintf("=== Plan Error for %s: %s ===\n%s\n", displayType, res.Name, string(planOutput))
+			continue
 		}
+
+		log.Printf("[%d/%d] Showing Terraform plan for %s: %s", i+1, len(config.Resources), displayType, res.Name)
+		showCmd := exec.Command("terraform", "show", "-no-color", planFilePath)
+		showCmd.Dir = path
+		showOutput, err := showCmd.CombinedOutput()
+		if err != nil {
+			log.Printf("-> Terraform show failed for %s: %v", res.Name, err)
+			combinedOutput += fmt.Sprintf("=== Show Plan Error for %s: %s ===\n%s\n", displayType, res.Name, string(showOutput))
+			continue
+		}
+		// --- End: Plan File Workflow ---
+
+		combinedOutput += fmt.Sprintf("=== Plan for %s: %s ===\n%s\n", displayType, res.Name, string(showOutput))
 	}
 
 	if len(config.Resources) == 0 {
@@ -425,33 +555,59 @@ func (h *APIHandler) PlanTerraform(c *gin.Context) {
 	}
 
 	log.Printf("Completed planning for %d resources.", len(config.Resources))
-	c.JSON(http.StatusOK, gin.H{"plan_output": combinedOutput})
+	c.JSON(http.StatusOK, gin.H{
+		"plan_output": combinedOutput,
+		"workspaceId": runID, // Send workspace ID to frontend
+	})
+}
+
+type ApplyPayload struct {
+	Resources   map[string][][]string `json:"resources"`
+	WorkspaceID string                `json:"workspaceId"`
 }
 
 func (h *APIHandler) ApplyTerraform(c *gin.Context) {
-	var payload map[string][][]string
+	var payload ApplyPayload
 	if err := c.ShouldBindJSON(&payload); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON payload"})
 		return
 	}
 
-	projectID := c.Query("project")
-	if projectID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "project ID is required"})
+	if payload.WorkspaceID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "workspaceId is required for apply"})
 		return
 	}
 
-	config := generator.Config{
-		Cloud:       "gcp",
-		OrgName:     "wayfair",
-		FolderName:  "vikram-gcp-resources",
-		ProjectName: projectID,
-		PathPattern: "{{.FolderName}}/{{.Type}}/{{.Name}}",
+	// --- Start: Use Existing Workspace ---
+	workspaceDir := filepath.Join(h.OutputDir, "run-"+payload.WorkspaceID)
+	log.Printf("Using existing workspace for apply: %s", workspaceDir)
+	if _, err := os.Stat(workspaceDir); os.IsNotExist(err) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Workspace not found. It may have expired or been deleted. Please generate a new plan."})
+		return
 	}
 
-	for serviceType, rows := range payload {
+	// Defer cleanup to ensure workspace is always removed
+	defer func() {
+		log.Printf("Cleaning up ephemeral workspace for apply: %s", workspaceDir)
+		os.RemoveAll(workspaceDir)
+	}()
+	// --- End: Ephemeral Workspace ---
+
+	projectID := c.Query("project")
+
+	config := generator.Config{
+		Cloud:       h.TerraformCloud,
+		OrgName:     h.TerraformOrgName,
+		FolderName:  h.TerraformFolderName,
+		ProjectName: projectID,
+		// PathPattern now generates inside the unique workspace
+		PathPattern:          "{{.FolderName}}/{{.Type}}/{{.Name}}",
+		TerraformStateBucket: h.TerraformStateBucket,
+	}
+
+	for serviceType, rows := range payload.Resources {
 		if len(rows) < 2 {
-			continue
+			continue // malformed payload for serviceType
 		}
 		header := rows[0]
 		for i := 1; i < len(rows); i++ {
@@ -469,17 +625,10 @@ func (h *APIHandler) ApplyTerraform(c *gin.Context) {
 		}
 	}
 
-	log.Printf("Generating Terraform for %d resources before applying...", len(config.Resources))
-	_, err := h.GenSvc.Generate(config, h.OutputDir)
-	if err != nil {
-		log.Printf("Error generating terraform code: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to generate code: %v", err)})
-		return
-	}
-
 	var combinedOutput string
 	for i, res := range config.Resources {
-		path := filepath.Join(h.OutputDir, config.FolderName, res.Type, res.Name)
+		// Path is now inside the unique workspace
+		path := filepath.Join(workspaceDir, config.FolderName, res.Type, res.Name)
 
 		displayType := res.Type
 		if displayType == "fallback" {
@@ -490,8 +639,108 @@ func (h *APIHandler) ApplyTerraform(c *gin.Context) {
 			}
 		}
 
+		// --- Start: Apply Saved Plan File ---
+		planFilePath := filepath.Join(path, "terraform.tfplan")
+		log.Printf("[%d/%d] Applying Terraform plan for %s: %s", i+1, len(config.Resources), displayType, res.Name)
+		applyCmd := exec.Command("terraform", "apply", "-no-color", planFilePath)
+		applyCmd.Dir = path
+		output, err := applyCmd.CombinedOutput()
+
+		combinedOutput += fmt.Sprintf("=== Apply for %s: %s ===\n%s\n", displayType, res.Name, string(output))
+		if err != nil {
+			log.Printf("-> Terraform apply failed for %s: %v", res.Name, err)
+		}
+
+	}
+
+	if len(config.Resources) == 0 {
+		combinedOutput = "No supported resources selected for applying."
+	}
+
+	log.Printf("Completed applying for %d resources.", len(config.Resources))
+	c.JSON(http.StatusOK, gin.H{"apply_output": combinedOutput})
+}
+
+type DestroyPayload struct {
+	Resources map[string][][]string `json:"resources"`
+}
+
+func (h *APIHandler) DestroyTerraform(c *gin.Context) {
+	var payload DestroyPayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON payload"})
+		return
+	}
+
+	projectID := c.Query("project")
+	if projectID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "project ID is required"})
+		return
+	}
+
+	// --- Start: Ephemeral Workspace ---
+	runID := uuid.New().String()
+	workspaceDir := filepath.Join(h.OutputDir, "run-"+runID)
+	log.Printf("Creating ephemeral workspace for destroy: %s", workspaceDir)
+	// Defer cleanup to ensure workspace is always removed
+	defer func() {
+		log.Printf("Cleaning up ephemeral workspace for destroy: %s", workspaceDir)
+		os.RemoveAll(workspaceDir)
+	}()
+	// --- End: Ephemeral Workspace ---
+
+	config := generator.Config{
+		Cloud:                h.TerraformCloud,
+		OrgName:              h.TerraformOrgName,
+		FolderName:           h.TerraformFolderName,
+		ProjectName:          projectID,
+		PathPattern:          "{{.FolderName}}/{{.Type}}/{{.Name}}",
+		TerraformStateBucket: h.TerraformStateBucket,
+	}
+
+	for serviceType, rows := range payload.Resources {
+		if len(rows) < 2 {
+			continue // malformed payload for serviceType
+		}
+		header := rows[0]
+		for i := 1; i < len(rows); i++ {
+			row := rows[i]
+			mappedType, resData, resName := mapFromUnifiedResource(serviceType, header, row)
+			if mappedType == "" {
+				continue // Skip unsupported
+			}
+
+			config.Resources = append(config.Resources, generator.Resource{
+				Type: mappedType,
+				Name: resName,
+				Data: resData,
+			})
+		}
+	}
+
+	log.Printf("Generating Terraform for %d resources before destroying...", len(config.Resources))
+	_, err := h.GenSvc.Generate(config, workspaceDir)
+	if err != nil {
+		log.Printf("Error generating terraform code: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to generate code: %v", err)})
+		return
+	}
+
+	var combinedOutput string
+	for i, res := range config.Resources {
+		path := filepath.Join(workspaceDir, config.FolderName, res.Type, res.Name)
+
+		displayType := res.Type
+		if fbData, ok := res.Data.(FallbackData); ok {
+			displayType = fbData.ServiceType
+		}
+
 		log.Printf("[%d/%d] Initializing Terraform for %s: %s", i+1, len(config.Resources), displayType, res.Name)
-		initCmd := exec.Command("terraform", "init", "-no-color")
+		prefix := filepath.Join(config.FolderName, res.Type, res.Name)
+		initCmd := exec.Command("terraform", "init", "-no-color",
+			fmt.Sprintf("-backend-config=bucket=%s", config.TerraformStateBucket),
+			fmt.Sprintf("-backend-config=prefix=%s", prefix),
+		)
 		initCmd.Dir = path
 		initOutput, err := initCmd.CombinedOutput()
 		if err != nil {
@@ -500,24 +749,21 @@ func (h *APIHandler) ApplyTerraform(c *gin.Context) {
 			continue
 		}
 
-		log.Printf("[%d/%d] Applying Terraform for %s: %s", i+1, len(config.Resources), displayType, res.Name)
-		applyCmd := exec.Command("terraform", "apply", "-auto-approve", "-no-color")
-		applyCmd.Dir = path
-		output, err := applyCmd.CombinedOutput()
+		log.Printf("[%d/%d] Destroying Terraform for %s: %s", i+1, len(config.Resources), displayType, res.Name)
+		destroyCmd := exec.Command("terraform", "destroy", "-auto-approve", "-no-color")
+		destroyCmd.Dir = path
+		output, err := destroyCmd.CombinedOutput()
 
-		combinedOutput += fmt.Sprintf("=== Apply for %s: %s ===\n%s\n", displayType, res.Name, string(output))
+		combinedOutput += fmt.Sprintf("=== Destroy for %s: %s ===\n%s\n", displayType, res.Name, string(output))
 		if err != nil {
-			log.Printf("-> Terraform apply failed for %s: %v", res.Name, err)
-			combinedOutput += fmt.Sprintf("Error: %v\n", err)
-		} else {
-			log.Printf("-> Terraform apply succeeded for %s", res.Name)
+			log.Printf("-> Terraform destroy failed for %s: %v", res.Name, err)
 		}
 	}
-	
+
 	if len(config.Resources) == 0 {
-		combinedOutput = "No supported resources selected for applying."
+		combinedOutput = "No supported resources selected for destroying."
 	}
 
-	log.Printf("Completed applying for %d resources.", len(config.Resources))
-	c.JSON(http.StatusOK, gin.H{"apply_output": combinedOutput})
+	log.Printf("Completed destroying for %d resources.", len(config.Resources))
+	c.JSON(http.StatusOK, gin.H{"destroy_output": combinedOutput})
 }

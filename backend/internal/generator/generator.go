@@ -21,6 +21,7 @@ type Config struct {
 	ProjectName string
 	Environment string // e.g., "staging", "prod"
 	PathPattern string // e.g., "{{.Cloud}}/{{.OrgName}}/{{.Environment}}/{{.Type}}/{{.Name}}"
+	TerraformStateBucket string
 	Resources   []Resource
 }
 
