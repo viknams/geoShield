@@ -9,6 +9,8 @@ export default function DestroyPage() {
 	const [status, setStatus] = useState(
 		"Loading managed resources...",
 	);
+	const [workspaceId, setWorkspaceId] = useState("");
+	const [planOutput, setPlanOutput] = useState("");
 	const [destroyOutput, setDestroyOutput] = useState("");
 	const [managedResources, setManagedResources] = useState<
 		Record<string, string[][]>
@@ -57,8 +59,13 @@ export default function DestroyPage() {
 			if (endpoint === "managed-resources") {
 				setManagedResources(data);
 				setStatus("Managed resources loaded successfully.");
+			} else if (endpoint === "plan-destroy") {
+				setPlanOutput(data.plan_output);
+				setWorkspaceId(data.workspaceId);
+				setStatus("Destroy plan generated successfully.");
 			} else if (endpoint === "destroy") {
-				setDestroyOutput(data.destroy_output);
+				// The backend now returns apply_output for the destroy action
+				setDestroyOutput(data.apply_output);
 				setStatus("Infrastructure destroy completed successfully.");
 			}
 		} catch (err: any) {
@@ -104,6 +111,52 @@ export default function DestroyPage() {
 					<div className="p-8 overflow-x-auto max-h-[80vh] custom-scrollbar">
 						<pre className="text-[11px] font-mono text-slate-300 whitespace-pre leading-loose">
 							{destroyOutput}
+						</pre>
+					</div>
+				</div>
+			</main>
+		);
+	}
+
+	if (planOutput) {
+		return (
+			<main className="min-h-screen bg-slate-900 text-slate-300 p-4 md:p-8 font-sans">
+				<div className="max-w-6xl mx-auto space-y-6">
+					<div className="bg-slate-800 px-6 py-4 border-b border-slate-700 flex items-center justify-between">
+						<div className="flex items-center gap-3">
+							<div className="flex gap-1.5">
+								<div className="w-3 h-3 rounded-full bg-red-500" />
+								<div className="w-3 h-3 rounded-full bg-yellow-500" />
+								<div className="w-3 h-3 rounded-full bg-green-500" />
+							</div>
+							<span className="text-xs font-black text-gray-400 uppercase tracking-widest ml-4">
+								Terraform Destroy Plan
+							</span>
+						</div>
+						<div className="flex items-center gap-2">
+							<button
+								onClick={() => setPlanOutput("")}
+								className="bg-gray-500 hover:bg-gray-600 text-white px-3 py-1 rounded text-xs font-bold transition-all"
+							>
+								&larr; Back to Edit
+							</button>
+							<button
+								onClick={() =>
+									apiCall("destroy", "POST", {
+										workspaceId: workspaceId,
+									})
+								}
+								disabled={loading}
+								className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-md text-sm font-bold transition-all disabled:opacity-50 active:scale-95 flex items-center gap-2"
+							>
+								<svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+								EXECUTE DESTROY
+							</button>
+						</div>
+					</div>
+					<div className="p-8 overflow-x-auto max-h-[80vh] custom-scrollbar">
+						<pre className="text-[11px] font-mono text-slate-300 whitespace-pre leading-loose">
+							{planOutput}
 						</pre>
 					</div>
 				</div>
@@ -165,11 +218,9 @@ export default function DestroyPage() {
 							<span className="text-sm font-bold tracking-wide">{status}</span>
 						</div>
 						<button
-							onClick={() =>
-								apiCall("destroy", "POST", { resources: resourcesToDestroy })
-							}
+							onClick={() => apiCall("plan-destroy", "POST", { resources: resourcesToDestroy })}
 							disabled={loading || Object.keys(resourcesToDestroy).length === 0}
-							className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-md text-sm font-bold transition-all disabled:opacity-50 active:scale-95 flex items-center gap-2"
+							className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-md text-sm font-bold transition-all disabled:opacity-50 active:scale-95 flex items-center gap-2"
 						>
 							<svg
 								className="w-4 h-4"
@@ -179,12 +230,12 @@ export default function DestroyPage() {
 							>
 								<path
 									strokeLinecap="round"
-									strokeLinejoin="round"
+									strokeLinejoin="round" 
 									strokeWidth="2"
-									d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+									d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
 								/>
 							</svg>
-							Destroy Selected (
+							Plan Destruction for Selected (
 							{Object.values(resourcesToDestroy).reduce(
 								(acc, rows) => acc + rows.length - 1,
 								0,

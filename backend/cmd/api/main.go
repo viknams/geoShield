@@ -36,6 +36,7 @@ func main() {
 		TerraformCloud:            os.Getenv("TERRAFORM_CLOUD"),
 		TerraformOrgName:          os.Getenv("TERRAFORM_ORG_NAME"),
 		TerraformFolderName:       os.Getenv("TERRAFORM_FOLDER_NAME"),
+		ResourcePrefix:            os.Getenv("TERRAFORM_RESOURCE_PREFIX"),
 		TerraformCriticalResource: os.Getenv("TERRAFORM_CRITICAL_RESOURCE"),
 	}
 
@@ -62,6 +63,7 @@ func main() {
 	r.POST("/api/gcp/filter", h.FilterGCP)
 	r.POST("/api/gcp/plan", h.PlanTerraform)
 	r.POST("/api/gcp/apply", h.ApplyTerraform)
+	r.POST("/api/gcp/plan-destroy", h.PlanDestroyTerraform)
 	r.POST("/api/gcp/destroy", h.DestroyTerraform)
 
 	port := os.Getenv("PORT")

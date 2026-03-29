@@ -58,7 +58,7 @@ type UnifiedResource struct {
 }
 
 // StandardHeader defines the columns for all output CSVs in the critical-resources folder.
-var StandardHeader = []string{"ResourceName", "ProjectID", "Region", "Importance", "LastActivity", "AssetType", "FullResourcePath"}
+var StandardHeader = []string{"ResourceName", "ProjectID", "Region", "Importance", "LastActivity", "AssetType", "FullResourcePath", "NewRegion", "NewSubnet"}
 
 // HeaderMap defines the source column names to look for in the original discovered CSVs.
 var HeaderMap = map[string]string{
@@ -238,6 +238,8 @@ func writeActiveCSV(fileName string, header []string, data []UnifiedResource) er
 			res.LastActivity,
 			res.AssetType,
 			res.ResourcePath,
+			"", // Placeholder for NewRegion
+			"", // Placeholder for NewSubnet
 		})
 	}
 	return nil

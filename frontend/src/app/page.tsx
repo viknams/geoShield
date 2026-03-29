@@ -89,6 +89,21 @@ export default function HomePage() {
 			const data = await res.json();
 			if (data && !data.error) {
 				setActiveResources(data);
+				// Ensure NewRegion and NewSubnet columns exist
+				for (const key in data) {
+					const rows = data[key];
+					if (rows.length > 0) {
+						const header = rows[0];
+						if (!header.includes("NewRegion")) {
+							header.push("NewRegion");
+							for (let i = 1; i < rows.length; i++) rows[i].push("");
+						}
+						if (!header.includes("NewSubnet")) {
+							header.push("NewSubnet");
+							for (let i = 1; i < rows.length; i++) rows[i].push("");
+						}
+					}
+				}
 			} else {
 				setActiveResources({});
 			}
@@ -100,15 +115,25 @@ export default function HomePage() {
 	const addActiveResource = (serviceKey: string, row: string[]) => {
 		setActiveResources((prev) => {
 			const updated = { ...prev };
+			let header;
 			if (!updated[serviceKey]) {
-				updated[serviceKey] = [resources[serviceKey][0]]; // Add header
+				// If the service doesn't exist in active, create it with a proper header
+				header = [...(resources[serviceKey]?.[0] || [])];
+				if (!header.includes("NewRegion")) header.push("NewRegion");
+				if (!header.includes("NewSubnet")) header.push("NewSubnet");
+				updated[serviceKey] = [header];
+			} else {
+				header = updated[serviceKey][0];
 			}
+
 			// Avoid adding duplicates
 			const exists = updated[serviceKey].some(
 				(existingRow) => existingRow[0] === row[0],
 			);
 			if (!exists) {
-				updated[serviceKey] = [...updated[serviceKey], row];
+				const newRow = [...row];
+				while (newRow.length < header.length) newRow.push(""); // Ensure row has all columns
+				updated[serviceKey] = [...updated[serviceKey], newRow];
 			}
 			return updated;
 		});
@@ -639,7 +664,13 @@ export default function HomePage() {
 					{/* ACTIVE VIEW */}
 					{viewMode === "active" && (
 						<div className="space-y-6 animate-in slide-in-from-bottom-4 duration-300">
-							<div className="flex flex-col md:flex-row md:items-center justify-end px-2 gap-4">
+							<div className="flex flex-col md:flex-row md:items-center justify-between px-2 gap-4">
+								<div className="flex items-center gap-2">
+									<span className="w-1.5 h-6 bg-emerald-500 rounded-full" />
+									<h2 className="text-lg font-bold text-slate-800">
+										Active Resources
+									</h2>
+								</div>
 								<div className="w-full grid grid-cols-1 md:grid-cols-3 gap-x-6 gap-y-4">
 									{/* --- Section 1: Add Resource --- */}
 									<div className="space-y-2">
@@ -735,13 +766,13 @@ export default function HomePage() {
 									<div className="space-y-2 flex flex-col justify-end">
 										<label className="text-xs font-bold text-slate-500 uppercase tracking-wider ml-1 md:invisible">
 											3. Apply
-										</label>
+										</label> 
 										<button
 											onClick={applyBulkUpdate}
 											disabled={!bulkRegion && !bulkSubnet}
 											className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-2 rounded-lg text-xs font-bold transition-all disabled:opacity-50 w-full"
 										>
-											Apply to All
+											Apply to All 
 										</button>
 									</div>
 								</div>
@@ -838,30 +869,39 @@ export default function HomePage() {
 																	const isEditable =
 																		header === "NewRegion" ||
 																		header === "NewSubnet";
-																	return (
-																		<td
-																			key={j}
-																			className="px-6 py-2 text-slate-600 font-mono leading-relaxed"
-																		>
-																			{isEditable ? (
+																	if (header === "NewRegion") {
+																		return (
+																			<td key={j} className="px-6 py-4">
+																				<select
+																					value={cell}
+																					onChange={(e) => updateActiveResource(service, i + 1, j, e.target.value)}
+																					className="w-full bg-white border border-slate-200 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500 font-mono text-emerald-700"
+																				>
+																					<option value="">Original</option>
+																					{GCP_REGIONS.map(r => <option key={r} value={r}>{r}</option>)}
+																				</select>
+																			</td>
+																		)
+																	}
+																	if (header === "NewSubnet") {
+																		return (
+																			<td key={j} className="px-6 py-4">
 																				<input
 																					type="text"
 																					value={cell}
-																					onChange={(e) =>
-																						updateActiveResource(
-																							service,
-																							i + 1,
-																							j,
-																							e.target.value,
-																						)
-																					}
-																					className="w-full bg-emerald-50/50 border border-emerald-200 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500 font-mono text-emerald-700"
+																					list="subnet-presets"
+																					onChange={(e) => updateActiveResource(service, i + 1, j, e.target.value)}
+																					placeholder={`Enter ${header}`}
+																					className="w-full bg-white border border-slate-200 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500 font-mono text-emerald-700"
 																				/>
-																			) : (
-																				cell
-																			)}
+																			</td>
+																		)
+																	}
+																	return (
+																		<td key={j} className={`px-6 py-4 font-mono leading-relaxed ${cell === "High" ? "text-orange-600 font-bold" : cell === "Normal" ? "text-blue-600" : "text-slate-500"}`}>
+																			{cell}
 																		</td>
-																	);
+																	)
 																})}
 																<td className="px-6 py-2 text-right">
 																	<button
