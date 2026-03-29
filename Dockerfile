@@ -34,7 +34,8 @@ COPY --from=builder /api /api
 
 # Copy necessary files for the application to run
 # The backend expects 'backend/templates' and potentially 'data/gcp'
-RUN mkdir -p /app/data/gcp
+ARG DATA_DIR_GCP=data/gcp
+RUN mkdir -p /app/$DATA_DIR_GCP
 COPY --from=builder /app/backend/templates ./backend/templates
 
 # Expose port 8080 to the outside world

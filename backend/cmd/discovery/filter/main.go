@@ -13,7 +13,7 @@ import (
 
 func main() {
 	projectID := flag.String("project", "", "GCP Project ID to filter resources from")
-	dataDir := flag.String("data", "data/gcp", "Directory containing discovered CSV files")
+	dataDir := flag.String("data", os.Getenv("DATA_DIR_GCP"), "Directory containing discovered CSV files")
 	impersonate := flag.String("impersonate", "", "Service account to impersonate")
 	flag.Parse()
 

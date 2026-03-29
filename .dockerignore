@@ -11,6 +11,7 @@
 # Go
 /output
 /data
+/zdata
 api.log
 api.pid
 

@@ -57,27 +57,39 @@ type UnifiedResource struct {
 	ResourcePath string
 }
 
+// StandardHeader defines the columns for all output CSVs in the critical-resources folder.
+var StandardHeader = []string{"ResourceName", "ProjectID", "Region", "Importance", "LastActivity", "AssetType", "FullResourcePath", "NewRegion", "NewSubnet"}
+
+// HeaderMap defines the source column names to look for in the original discovered CSVs.
+var HeaderMap = map[string]string{
+	"ResourceName":     "ResourceName",
+	"ProjectID":        "ProjectID",
+	"Region":           "Region",
+	"AssetType":        "AssetType",
+	"FullResourcePath": "FullResourcePath",
+}
+
 func (s *FilterService) FilterAndConsolidate(ctx context.Context, dataDir string) error {
 	// 1. Get active resource names from logs in the last 30 days
 	activeResources, err := s.getActiveResourcesFromLogs(ctx)
 	if err != nil {
 		log.Printf("[WARNING] Could not fetch logs for usage verification: %v. Falling back to foundation-only filtering.", err)
-		activeResources = make(map[string]string) 
+		activeResources = make(map[string]string)
 	}
 
 	// 2. Map to hold active resources by type
 	activeByType := make(map[string][]UnifiedResource)
 
 	// Create subfolder for active resources
-	activeSubDir := filepath.Join(dataDir, "active-resources")
+	activeSubDir := filepath.Join(dataDir, os.Getenv("TERRAFORM_CRITICAL_RESOURCE"))
 	if err := os.MkdirAll(activeSubDir, 0755); err != nil {
-		return fmt.Errorf("failed to create active-resources dir: %w", err)
+		return fmt.Errorf("failed to create %s dir: %w", os.Getenv("TERRAFORM_CRITICAL_RESOURCE"), err)
 	}
 
 	files, _ := filepath.Glob(filepath.Join(dataDir, "*.csv"))
 	for _, file := range files {
 		// Skip our output files and subdirs
-		if strings.Contains(file, "active-resources") || strings.Contains(file, "active_important_resources") {
+		if strings.Contains(file, os.Getenv("TERRAFORM_CRITICAL_RESOURCE")) || strings.Contains(file, "active_important_resources") {
 			continue
 		}
 
@@ -92,43 +104,42 @@ func (s *FilterService) FilterAndConsolidate(ctx context.Context, dataDir string
 			continue
 		}
 		header := rows[0]
-		
-		nameIdx := findIndex(header, "ResourceName")
-		projIdx := findIndex(header, "ProjectID")
-		regionIdx := findIndex(header, "Region")
-		typeIdx := findIndex(header, "AssetType")
-		pathIdx := findIndex(header, "FullResourcePath")
+
+		// Create a map of header name to column index for the current file
+		colIndexMap := make(map[string]int)
+		for i, h := range header {
+			colIndexMap[h] = i
+		}
 
 		for i := 1; i < len(rows); i++ {
 			row := rows[i]
-			resName := row[nameIdx]
-			
+			resName := getColumnValue(row, colIndexMap, HeaderMap["ResourceName"])
+
 			// Importance Logic
 			importance := "Normal"
 			lowerType := strings.ToLower(serviceType)
-			if strings.Contains(lowerType, "network") || 
-			   strings.Contains(lowerType, "cluster") || 
-			   strings.Contains(lowerType, "firewall") ||
-			   strings.Contains(lowerType, "vpc") ||
-			   strings.Contains(lowerType, "sql") {
+			if strings.Contains(lowerType, "cluster") ||
+				strings.Contains(lowerType, "firewall") ||
+				strings.Contains(lowerType, "vpc") ||
+				strings.Contains(lowerType, "sql") {
 				importance = "High"
 			}
 
 			lastActivity, isActive := activeResources[resName]
-			
+
 			if importance == "High" || isActive {
 				if lastActivity == "" {
 					lastActivity = "Unknown (Always Important)"
 				}
-				
+
 				activeByType[serviceType] = append(activeByType[serviceType], UnifiedResource{
 					ResourceName: resName,
-					ProjectID:    row[projIdx],
-					Region:       row[regionIdx],
+					ProjectID:    getColumnValue(row, colIndexMap, HeaderMap["ProjectID"]),
+					Region:       getColumnValue(row, colIndexMap, HeaderMap["Region"]),
 					Importance:   importance,
 					LastActivity: lastActivity,
-					AssetType:    row[typeIdx],
-					ResourcePath: row[pathIdx],
+					AssetType:    getColumnValue(row, colIndexMap, HeaderMap["AssetType"]),
+					ResourcePath: getColumnValue(row, colIndexMap, HeaderMap["FullResourcePath"]),
 				})
 			}
 		}
@@ -137,7 +148,7 @@ func (s *FilterService) FilterAndConsolidate(ctx context.Context, dataDir string
 	// 3. Write separate CSVs for each active resource type
 	for serviceType, data := range activeByType {
 		fileName := filepath.Join(activeSubDir, fmt.Sprintf("%s.csv", serviceType))
-		if err := writeActiveCSV(fileName, data); err != nil {
+		if err := writeActiveCSV(fileName, StandardHeader, data); err != nil {
 			log.Printf("Failed to write active CSV %s: %v", fileName, err)
 		}
 	}
@@ -149,7 +160,7 @@ func (s *FilterService) getActiveResourcesFromLogs(ctx context.Context) (map[str
 	active := make(map[string]string)
 	oneMonthAgo := time.Now().AddDate(0, -1, 0).Format(time.RFC3339)
 	filter := fmt.Sprintf("timestamp >= %q AND (protoPayload.resourceName:* OR protoPayload.methodName:*)", oneMonthAgo)
-	
+
 	it := s.adminClient.Entries(ctx, logadmin.Filter(filter))
 	for {
 		entry, err := it.Next()
@@ -182,12 +193,12 @@ func (s *FilterService) getActiveResourcesFromLogs(ctx context.Context) (map[str
 				}
 			}
 		}
-		
+
 		if resName != "" {
 			active[resName] = entry.Timestamp.Format(time.RFC1123)
 		}
 	}
-	
+
 	return active, nil
 }
 
@@ -200,16 +211,14 @@ func readCSVRows(fileName string) ([][]string, error) {
 	return csv.NewReader(file).ReadAll()
 }
 
-func findIndex(header []string, col string) int {
-	for i, h := range header {
-		if h == col {
-			return i
-		}
+func getColumnValue(row []string, colIndexMap map[string]int, colName string) string {
+	if idx, ok := colIndexMap[colName]; ok && idx < len(row) {
+		return row[idx]
 	}
-	return 0
+	return "" // Return empty string if column doesn't exist or row is malformed
 }
 
-func writeActiveCSV(fileName string, data []UnifiedResource) error {
+func writeActiveCSV(fileName string, header []string, data []UnifiedResource) error {
 	file, err := os.Create(fileName)
 	if err != nil {
 		return err
@@ -219,7 +228,7 @@ func writeActiveCSV(fileName string, data []UnifiedResource) error {
 	writer := csv.NewWriter(file)
 	defer writer.Flush()
 
-	writer.Write([]string{"ResourceName", "ProjectID", "Region", "Importance", "LastActivity", "AssetType", "FullResourcePath"})
+	writer.Write(header)
 	for _, res := range data {
 		writer.Write([]string{
 			res.ResourceName,
@@ -229,6 +238,8 @@ func writeActiveCSV(fileName string, data []UnifiedResource) error {
 			res.LastActivity,
 			res.AssetType,
 			res.ResourcePath,
+			"", // Placeholder for NewRegion
+			"", // Placeholder for NewSubnet
 		})
 	}
 	return nil
