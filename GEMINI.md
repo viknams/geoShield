@@ -46,21 +46,7 @@ The system uses:
 5. No vendor lock-in  
 6. UX should be simple and guided  
 
----
 
-## ⚙️ System Architecture
-
-### High-Level Flow
-
-1. User interacts with SaaS UI  
-2. User selects a template (blueprint)  
-3. User provides configuration  
-4. Backend generates Terraform code  
-5. Code is pushed to user Git repository (via PR)  
-6. Atlantis detects PR and runs init/plan/apply  (after user approval)
-7. Infrastructure is created in user’s cloud  
-
----
 
 ## 🏗️ Core Components
 
@@ -82,10 +68,7 @@ Frameworks/Libraries:
 Responsibilities:
 - User & org management  
 - Template rendering  
-- Terraform code generation  
-- Git operations (PR, commits)  
-- Webhook processing (Git + Atlantis)  
-- Orchestration logic  
+- Terraform code generation   
 
 ---
 
@@ -95,56 +78,6 @@ Responsibilities:
 - Store versioned templates
 - Generate clean Terraform files
 
----
-
-### 4. Git Integration Layer
-
-- GitHub App integration
-- Features:
-  - Repo connection  
-  - Branch creation  
-  - PR creation  
-  - Commit Terraform code  
-  - Commit atlantis.yaml  
-
----
-
-### 5. Atlantis Integration
-
-- SaaS does NOT run Terraform
-- Atlantis executes plan/apply
-
-Backend must:
-- Generate atlantis.yaml
-- Listen to Atlantis webhooks
-- Track deployment status
-
----
-
-### 6. Webhook System
-
-Handle:
-- GitHub events (PR opened, merged)
-- Atlantis events (plan/apply status)
-
-Must be:
-- Reliable
-- Idempotent
-- Retry-capable
-
----
-
-## 🔄 Deployment Workflow
-
-1. User selects template  
-2. User configures inputs  
-3. Backend generates Terraform code  
-4. Backend pushes code to Git repo  
-5. Backend opens PR  
-6. Atlantis runs plan  
-7. User reviews and approves  
-8. Atlantis applies changes  
-9. SaaS updates status  
 
 ---
 
@@ -218,37 +151,6 @@ Use for:
 
 ---
 
-## ☁️ Hosting
-
-- AWS
-
-Services:
-- EC2 or ECS (backend)
-- RDS (PostgreSQL)
-- S3 (storage)
-- ElastiCache (Redis)
-
----
-
-## 🧪 MVP Scope
-
-- AWS only  
-- GitHub only  
-- Atlantis integration  
-- 2–3 templates  
-- Basic UI  
-- PR-based workflow  
-
----
-
-## 🚫 Out of Scope
-
-- Multi-cloud  
-- Kubernetes execution  
-- Advanced policy engine  
-- Cost optimization  
-
----
 
 ## 🧠 AI Behavior Rules
 
