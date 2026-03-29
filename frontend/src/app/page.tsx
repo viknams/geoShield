@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
-
+import { useSearchParams } from "next/navigation";
 const GCP_REGIONS = [
 	"asia-east1",
 	"asia-east2",
@@ -41,6 +41,7 @@ const GCP_REGIONS = [
 ];
 
 export default function HomePage() {
+	const searchParams = useSearchParams();
 	const [projectID, setProjectID] = useState("");
 	const [status, setStatus] = useState("");
 	const [planOutput, setPlanOutput] = useState("");
@@ -298,6 +299,14 @@ export default function HomePage() {
 		};
 	}, [addResourceRef]);
 
+	useEffect(() => {
+		const project = searchParams.get("project");
+		if (project && !projectID) {
+			setProjectID(project);
+		}
+		// We only want this to run once on load when a project is in the URL
+	}, [searchParams]);
+
 	const steps = [
 		{ id: "auth", label: "Authenticate", color: "bg-orange-500" },
 		{ id: "discovered", label: "Discover", color: "bg-blue-500" },
@@ -504,31 +513,32 @@ export default function HomePage() {
 								VIEW PLAN
 							</span>
 						</button>
-						<div className="lg:col-start-5">
-							<Link href="/destroy">
-								<button
-									disabled={loading || isAuthPolling}
-									className="w-full group relative overflow-hidden bg-gray-600 hover:bg-gray-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-gray-200 active:scale-95 disabled:opacity-50"
-								>
-									<span className="relative z-10 flex items-center justify-center gap-2">
-										<svg
-											className="w-5 h-5"
-											fill="none"
-											stroke="currentColor"
-											viewBox="0 0 24 24"
-										>
-											<path
-												strokeLinecap="round"
-												strokeLinejoin="round"
-												strokeWidth="2"
-												d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-											/>
-										</svg>
-										DESTROY
-									</span>
-								</button>
-							</Link>
-						</div>
+						<Link
+							href={projectID ? `/destroy?project=${projectID}` : "#"}
+							className="lg:col-start-5"
+						>
+							<button
+								disabled={loading || isAuthPolling || !projectID}
+								className="w-full group relative overflow-hidden bg-gray-600 hover:bg-gray-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-gray-200 active:scale-95 disabled:opacity-50"
+							>
+								<span className="relative z-10 flex items-center justify-center gap-2">
+									<svg
+										className="w-5 h-5"
+										fill="none"
+										stroke="currentColor"
+										viewBox="0 0 24 24"
+									>
+										<path
+											strokeLinecap="round"
+											strokeLinejoin="round"
+											strokeWidth="2"
+											d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+										/>
+									</svg>
+									DESTROY
+								</span>
+							</button>
+						</Link>
 					</div>
 				</section>
 
