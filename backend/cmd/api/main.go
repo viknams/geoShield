@@ -38,6 +38,12 @@ func main() {
 		TerraformFolderName:       os.Getenv("TERRAFORM_FOLDER_NAME"),
 		ResourcePrefix:            os.Getenv("TERRAFORM_RESOURCE_PREFIX"),
 		TerraformCriticalResource: os.Getenv("TERRAFORM_CRITICAL_RESOURCE"),
+		// Add new config values from .env
+		PubSubTopic:            os.Getenv("PUBSUB_STREAMING_TOPIC"),
+		PubSubSubPrefix:        os.Getenv("PUBSUB_SUBSCRIPTION_PREFIX"),
+		TerraformModuleVersion: os.Getenv("TERRAFORM_MODULE_VERSION"),
+		ManagedByLabel:         os.Getenv("MANAGED_BY_LABEL"),
+		DefaultRegion:          os.Getenv("DEFAULT_GCP_REGION"),
 	}
 
 	// Log authentication source
@@ -54,17 +60,29 @@ func main() {
 	r := gin.Default()
 	r.Use(cors.Default())
 
+	// Authentication
 	r.POST("/api/gcp/auth", h.AuthGCP)
 	r.GET("/api/gcp/auth/status", h.GetAuthStatus)
+
+	// Discovery and Filtering
 	r.POST("/api/gcp/discover", h.DiscoverGCP)
 	r.GET("/api/gcp/resources", h.ListResources)
-	r.GET("/api/gcp/managed-resources", h.ListManagedResources)
 	r.GET("/api/gcp/resources/active", h.ListActiveResources)
+	r.GET("/api/gcp/filter/status", h.GetFilterStatus)
 	r.POST("/api/gcp/filter", h.FilterGCP)
+
+	// Terraform Plan & Apply
+	r.GET("/api/gcp/plan/status", h.GetPlanStatus)
 	r.POST("/api/gcp/plan", h.PlanTerraform)
 	r.POST("/api/gcp/apply", h.ApplyTerraform)
-	r.POST("/api/gcp/plan-destroy", h.PlanDestroyTerraform)
+
+	// Terraform Destroy
+	r.GET("/api/gcp/managed-resources", h.ListManagedResources) // Renamed from /plan-destroy in some versions
+	r.POST("/api/gcp/destroy/plan", h.PlanDestroyTerraform)
 	r.POST("/api/gcp/destroy", h.DestroyTerraform)
+
+	// Pub/Sub Streaming
+	r.GET("/api/gcp/stream-pubsub-ws", h.StreamPubSubMessagesWS)
 
 	port := os.Getenv("PORT")
 	if port == "" {

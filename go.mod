@@ -5,11 +5,13 @@ go 1.26.1
 require (
 	cloud.google.com/go/asset v1.22.1
 	cloud.google.com/go/logging v1.13.2
+	cloud.google.com/go/pubsub v1.50.1
 	cloud.google.com/go/storage v1.59.0
 	github.com/gin-contrib/cors v1.7.6
 	github.com/gin-gonic/gin v1.12.0
 	github.com/google/go-github/v60 v60.0.0
 	github.com/google/uuid v1.6.0
+	github.com/gorilla/websocket v1.5.3
 	github.com/joho/godotenv v1.5.1
 	golang.org/x/oauth2 v0.36.0
 	google.golang.org/api v0.272.0
@@ -28,6 +30,7 @@ require (
 	cloud.google.com/go/monitoring v1.24.3 // indirect
 	cloud.google.com/go/orgpolicy v1.15.1 // indirect
 	cloud.google.com/go/osconfig v1.16.0 // indirect
+	cloud.google.com/go/pubsub/v2 v2.0.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp v1.30.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric v0.54.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping v0.54.0 // indirect
@@ -68,6 +71,7 @@ require (
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.3.1 // indirect
 	go.mongodb.org/mongo-driver/v2 v2.5.0 // indirect
+	go.opencensus.io v0.24.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/detectors/gcp v1.39.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.63.0 // indirect
