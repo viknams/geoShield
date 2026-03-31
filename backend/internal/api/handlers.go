@@ -20,6 +20,7 @@ import (
 	"cloud.google.com/go/pubsub"
 	"cloud.google.com/go/storage"
 	"google.golang.org/api/iterator"
+	"google.golang.org/api/option"
 
 	"example.com/geoShield/backend/internal/discovery"
 	"example.com/geoShield/backend/internal/generator"
@@ -40,11 +41,13 @@ type APIHandler struct {
 	TerraformCloud            string
 	TerraformOrgName          string
 	TerraformFolderName       string
+	PubSubServiceAccountJSON  string
 	ResourcePrefix            string
 	TerraformCriticalResource string
 	// New fields for config from .env
 	PubSubTopic            string
 	PubSubSubPrefix        string
+	PubSubLatestMsgSub     string
 	TerraformModuleVersion string
 	ManagedByLabel         string
 	DefaultRegion          string
@@ -1283,9 +1286,10 @@ func (h *APIHandler) DestroyTerraform(c *gin.Context) {
 
 // WebSocketMessage defines the structure of messages sent over the WebSocket
 type WebSocketMessage struct {
-	Data        string    `json:"data"`
-	PublishTime time.Time `json:"publishTime"`
-	MessageID   string    `json:"messageId"`
+	Data        string            `json:"data"`
+	Attributes  map[string]string `json:"attributes"`
+	PublishTime time.Time         `json:"publishTime"`
+	MessageID   string            `json:"messageId"`
 }
 
 var upgrader = websocket.Upgrader{
@@ -1297,43 +1301,98 @@ var upgrader = websocket.Upgrader{
 }
 
 func (h *APIHandler) StreamPubSubMessagesWS(c *gin.Context) {
-	projectID := c.Query("project")
-	if projectID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "project ID is required"})
-		return
-	}
 	topicName := h.PubSubTopic
 	if topicName == "" {
 		log.Printf("PUBSUB_STREAMING_TOPIC environment variable not set.")
+		// We can't write a JSON error because the connection is being upgraded.
+		// We will let the upgrader fail and log the error.
 		return
 	}
+
+	// Extract service account details to get the correct project ID
+	var saInfo struct {
+		ProjectID string `json:"project_id"`
+	}
+	if err := json.Unmarshal([]byte(h.PubSubServiceAccountJSON), &saInfo); err != nil || saInfo.ProjectID == "" {
+		log.Printf("Failed to parse PUBSUB_SERVICE_ACCOUNT_JSON or find project_id: %v", err)
+		// Cannot write a JSON error during WebSocket upgrade. The client will see a failed connection.
+		c.String(http.StatusInternalServerError, "Pub/Sub service account is not configured correctly on the server.")
+		return
+	}
+	pubsubProjectID := saInfo.ProjectID
+	log.Printf("Attempting to connect to Pub/Sub topic '%s' in project '%s' for streaming.", topicName, pubsubProjectID)
 
 	// Upgrade the HTTP connection to a WebSocket connection
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
-		log.Printf("Failed to upgrade connection to WebSocket: %v", err)
+		// Gin might have already written a response, so we just log.
+		if !c.Writer.Written() {
+			log.Printf("Failed to upgrade connection to WebSocket: %v", err)
+		}
 		return
 	}
 	defer conn.Close()
 
+	// --- PING PONG to keep connection alive ---
+	// The server will send a ping to the client every 10 seconds.
+	// The client's browser will automatically handle this by sending a pong back.
+	// This helps keep the connection from being closed by intermediaries.
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+					return // Stop pinging if writing fails
+				}
+			}
+		}
+	}()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	client, err := pubsub.NewClient(ctx, projectID)
+	// --- KEY CHANGE: Use the specific service account for the Pub/Sub client ---
+	var client *pubsub.Client
+	opts := []option.ClientOption{option.WithCredentialsJSON([]byte(h.PubSubServiceAccountJSON))}
+	client, err = pubsub.NewClient(ctx, pubsubProjectID, opts...)
+	// --- END KEY CHANGE ---
+
 	if err != nil {
+		errMsg := "Error: Failed to create Pub/Sub client."
 		log.Printf("Failed to create pubsub client: %v", err)
-		conn.WriteMessage(websocket.TextMessage, []byte("Error: Failed to create Pub/Sub client."))
+		conn.WriteJSON(gin.H{"error": errMsg})
 		return
 	}
 	defer client.Close()
 
+	// Send a confirmation message to the client with the correct project ID
+	conn.WriteJSON(gin.H{
+		"status":    "Connected to backend, verifying topic...",
+		"projectID": pubsubProjectID,
+		"topicName": topicName,
+	})
+
 	topic := client.Topic(topicName)
 	exists, err := topic.Exists(ctx)
 	if err != nil || !exists {
-		log.Printf("Topic '%s' not found or error checking existence: %v", topicName, err)
-		conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("Error: Topic '%s' not found in project '%s'.", topicName, projectID)))
+		if err != nil {
+			log.Printf("Error checking existence of topic '%s': %v", topicName, err)
+		} else {
+			log.Printf("Topic '%s' was not found in project '%s'.", topicName, pubsubProjectID)
+		}
+		errMsg := fmt.Sprintf("Error: Could not connect to topic '%s' in project '%s'. Please verify it exists and the service account has permissions.", topicName, pubsubProjectID)
+		conn.WriteJSON(gin.H{"error": errMsg})
 		return
 	}
+
+	// Send a confirmation message that we are connected and have the topic info
+	conn.WriteJSON(gin.H{
+		"status":    "Connected. Waiting for messages...",
+		"projectID": pubsubProjectID,
+		"topicName": topicName,
+	})
 
 	// Create a temporary subscription for this WebSocket session
 	subPrefix := h.PubSubSubPrefix
@@ -1343,24 +1402,26 @@ func (h *APIHandler) StreamPubSubMessagesWS(c *gin.Context) {
 	subID := subPrefix + uuid.New().String()
 	sub, err := client.CreateSubscription(ctx, subID, pubsub.SubscriptionConfig{
 		Topic:            topic,
-		ExpirationPolicy: 24 * time.Hour, // Automatically clean up
+		ExpirationPolicy: 24 * time.Hour, // Automatically clean up (minimum value is 24h)
 	})
 	if err != nil {
 		log.Printf("Failed to create temporary subscription: %v", err)
-		conn.WriteMessage(websocket.TextMessage, []byte("Error: Failed to create temporary subscription."))
+		errMsg := "Error: Failed to create temporary subscription."
+		conn.WriteJSON(gin.H{"error": errMsg})
 		return
 	}
 	// Ensure the subscription is deleted when the function returns (e.g., on disconnect)
 	defer sub.Delete(context.Background())
 
 	// --- RETAIN AND DISPLAY HISTORY ---
-	// This is the key change. We seek the subscription's starting point to 24 hours ago.
+	// This is the key change. We seek the subscription's starting point to 1 hours ago.
 	// Pub/Sub will then deliver all messages from the topic's history from that point forward.
-	log.Printf("Seeking subscription '%s' to 24 hours ago to retrieve message history.", subID)
-	seekTime := time.Now().Add(-24 * time.Hour)
+	log.Printf("Seeking subscription '%s' to 1 hours ago to retrieve message history.", subID)
+	seekTime := time.Now().Add(-1 * time.Hour)
 	if err := sub.SeekToTime(ctx, seekTime); err != nil {
 		log.Printf("Failed to seek subscription: %v", err)
-		conn.WriteMessage(websocket.TextMessage, []byte("Error: Failed to retrieve message history."))
+		errMsg := "Error: Failed to retrieve message history."
+		conn.WriteJSON(gin.H{"error": errMsg})
 	}
 
 	log.Printf("WebSocket connected. Streaming messages from topic '%s'", topicName)
@@ -1402,6 +1463,7 @@ func (h *APIHandler) StreamPubSubMessagesWS(c *gin.Context) {
 			// Construct a WebSocketMessage struct and send it to the channel.
 			sendChan <- WebSocketMessage{
 				Data:        string(msg.Data),
+				Attributes:  msg.Attributes,
 				PublishTime: msg.PublishTime,
 				MessageID:   msg.ID,
 			}
@@ -1528,4 +1590,72 @@ func (h *APIHandler) AppMigration(c *gin.Context) {
 	} else {
 		c.JSON(http.StatusOK, gin.H{"status": "App migration script started."})
 	}
+}
+
+func (h *APIHandler) GetLatestPubSubMessage(c *gin.Context) {
+	subscriptionID := h.PubSubLatestMsgSub
+	if subscriptionID == "" {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "PUBSUB_LATEST_MSG_SUB environment variable not set."})
+		return
+	}
+
+	var saInfo struct {
+		ProjectID string `json:"project_id"`
+	}
+	if err := json.Unmarshal([]byte(h.PubSubServiceAccountJSON), &saInfo); err != nil || saInfo.ProjectID == "" {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Pub/Sub service account is not configured correctly on the server."})
+		return
+	}
+	pubsubProjectID := saInfo.ProjectID
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second) // Overall timeout for the request
+	defer cancel()
+
+	opts := []option.ClientOption{option.WithCredentialsJSON([]byte(h.PubSubServiceAccountJSON))}
+	client, err := pubsub.NewClient(ctx, pubsubProjectID, opts...)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to create Pub/Sub client: %v", err)})
+		return
+	}
+	defer client.Close()
+
+	sub := client.Subscription(subscriptionID)
+
+	var latestGCPMsg *pubsub.Message
+	var mu sync.Mutex
+
+	// Use a timed context to receive messages for a short duration (e.g., 3 seconds)
+	receiveCtx, receiveCancel := context.WithTimeout(ctx, 3*time.Second)
+	defer receiveCancel()
+
+	err = sub.Receive(receiveCtx, func(ctx context.Context, msg *pubsub.Message) {
+		// Always Nack the message so it remains available for the next page load.
+		// This subscription is only for peeking at the latest messages.
+		defer msg.Nack()
+
+		// --- FILTERING LOGIC ---
+		if provider, ok := msg.Attributes["cloud_provider"]; !ok || provider != "gcp" {
+			return // Ignore messages that are not for GCP
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+		// Keep the message with the newest publish time
+		if latestGCPMsg == nil || msg.PublishTime.After(latestGCPMsg.PublishTime) {
+			latestGCPMsg = msg
+		}
+	})
+
+	if latestGCPMsg == nil {
+		c.JSON(http.StatusNoContent, gin.H{"status": "No recent GCP risk messages found."})
+		return
+	}
+
+	// Return the message in the same format as the WebSocket stream
+	c.JSON(http.StatusOK, WebSocketMessage{
+		Data:        string(latestGCPMsg.Data),
+		Attributes:  latestGCPMsg.Attributes,
+		PublishTime: latestGCPMsg.PublishTime,
+		MessageID:   latestGCPMsg.ID,
+	})
 }
