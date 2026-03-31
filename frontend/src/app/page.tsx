@@ -59,7 +59,6 @@ export default function HomePage() {
 	const [isFilterPolling, setIsFilterPolling] = useState(false);
 	const [isPlanPolling, setIsPlanPolling] = useState(false);
 	const [isApplyPolling, setIsApplyPolling] = useState(false);
-	const [isAutomationRunning, setIsAutomationRunning] = useState(false);
 	const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({});
 	// State to store the latest risk message for prominent display
 	const [latestRiskMessage, setLatestRiskMessage] = useState<{
@@ -226,6 +225,26 @@ export default function HomePage() {
 		setBulkSubnet("");
 	};
 
+	const handleAction = async (
+		endpoint: string,
+		method: "GET" | "POST" = "POST",
+	) => {
+		if (!projectID) {
+			setStatus("Error: Project ID is required.");
+			return;
+		}
+
+		if (endpoint === "plan" || endpoint === "apply") {
+			const payload = {
+				resources: activeResources,
+				workspaceId: workspaceId, // Will be empty for 'plan', populated for 'apply'
+			};
+			await apiCall(endpoint, "POST", payload);
+		} else {
+			await apiCall(endpoint, method);
+		}
+	};
+
 	const apiCall = async (endpoint: string, method: string, bodyData?: any) => {
 		setLoading(true);
 		setStatus(`Executing ${endpoint}...`);
@@ -305,7 +324,6 @@ export default function HomePage() {
 				} catch (e) {
 					console.error("Polling failed", e);
 					setIsAuthPolling(false);
-					setLoading(false);
 				}
 			}, 2000);
 		}
@@ -332,7 +350,6 @@ export default function HomePage() {
 				} catch (e) {
 					console.error("Polling failed", e);
 					setIsFilterPolling(false);
-					setLoading(false);
 				}
 			}, 1000);
 		}
@@ -366,7 +383,6 @@ export default function HomePage() {
 				} catch (e) {
 					console.error("Polling failed", e);
 					setIsPlanPolling(false);
-					setLoading(false);
 				}
 			}, 1000);
 		}
@@ -433,7 +449,6 @@ export default function HomePage() {
 	// Helper function to get Tailwind CSS class for risk level
 	const getRiskColorClass = (riskLevel: string) => {
 		switch (riskLevel) {
-			case "R0":
 			case "R1":
 			case "R2":
 				return "text-green-500";
@@ -445,86 +460,6 @@ export default function HomePage() {
 				return "text-red-800"; // Dark Red
 			default:
 				return "text-slate-500"; // Default color
-		}
-	};
-
-	// --- AUTOMATION ENGINE ---
-	const automationHasRun = useRef(false);
-
-	const waitForPolling = (
-		startPolling: () => void,
-		stopPolling: () => void,
-		timeout = 60000, // 60-second timeout per step
-	) => {
-		return new Promise<void>((resolve, reject) => {
-			startPolling();
-			const startTime = Date.now();
-			const interval = setInterval(() => {
-				// The polling useEffect sets its own state to false when done
-				if (!isAuthPolling && !isFilterPolling && !isPlanPolling && !isApplyPolling) {
-					clearInterval(interval);
-					resolve();
-				} else if (Date.now() - startTime > timeout) {
-					clearInterval(interval);
-					stopPolling();
-					reject(new Error("Automation step timed out."));
-				}
-			}, 1500);
-		});
-	};
-
-	const runAutomationSequence = async (riskLevel: string) => {
-		if (!projectID || isAutomationRunning) return;
-		setIsAutomationRunning(true);
-		setStatus(`Automation started for Risk Level ${riskLevel}`);
-
-		try {
-			// R1: Auth -> Discover
-			if (riskLevel >= "R1") {
-				setStatus("Step 1: Authenticating...");
-				await apiCall("auth", "POST");
-				await waitForPolling(() => setIsAuthPolling(true), () => setIsAuthPolling(false));
-
-				setStatus("Step 2: Discovering resources...");
-				await apiCall("discover", "POST");
-				await fetchResources();
-				setViewMode("discovered");
-			}
-
-			// R2: R1 actions + Filter -> Plan
-			if (riskLevel >= "R2") {
-				setStatus("Step 3: Filtering critical resources...");
-				await apiCall("filter", "POST");
-				await waitForPolling(() => setIsFilterPolling(true), () => setIsFilterPolling(false));
-				await fetchActiveResources();
-				setViewMode("active");
-
-				setStatus("Step 4: Generating Terraform plan...");
-				await apiCall("plan", "POST", { resources: activeResources, workspaceId: "" });
-				await waitForPolling(() => setIsPlanPolling(true), () => setIsPlanPolling(false));
-				setViewMode("plan");
-			}
-
-			// R3: R2 actions + Apply
-			if (riskLevel >= "R3") {
-				setStatus("Step 5: Applying Terraform plan...");
-				await apiCall("apply", "POST", { resources: activeResources, workspaceId: workspaceId });
-				await waitForPolling(() => setIsApplyPolling(true), () => setIsApplyPolling(false));
-				setViewMode("apply");
-			}
-
-			// R4: R3 actions + Migrate
-			if (riskLevel >= "R4") {
-				setStatus("Step 6: Starting application migration...");
-				await apiCall("migrate", "POST");
-				// You would add migration polling here if it exists
-			}
-
-			setStatus(`Automation completed for Risk Level ${riskLevel}.`);
-		} catch (error: any) {
-			setStatus(`Automation failed: ${error.message}`);
-		} finally {
-			setIsAutomationRunning(false);
 		}
 	};
 
@@ -748,16 +683,6 @@ export default function HomePage() {
 									<p className="font-mono text-slate-700">{new Date(latestRiskMessage?.time || "").toLocaleTimeString()}</p>
 								}
 							</div>
-							<div className="md:col-span-2 flex items-center justify-end">
-								<button
-									onClick={() => runAutomationSequence(latestRiskMessage?.currentRiskLevel || "")}
-									disabled={isAutomationRunning || isLatestRiskLoading || !latestRiskMessage}
-									className="bg-red-600 hover:bg-red-700 text-white px-6 py-3 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-red-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-								>
-									<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
-									Run Automation for {latestRiskMessage?.currentRiskLevel}
-								</button>
-							</div>
 						</div>
 					</section>
 				)}
@@ -766,7 +691,7 @@ export default function HomePage() {
 					<div className="flex flex-col md:flex-row items-center justify-between gap-4">
 						<div className="flex items-center gap-3 bg-slate-50 text-slate-600 px-5 py-3 rounded-xl shadow-sm border border-slate-100">
 							<svg
-								className={`w-5 h-5 ${loading || isAutomationRunning ? "animate-spin" : ""}`}
+								className={`w-5 h-5 ${loading ? "animate-spin" : ""}`}
 								fill="none"
 								stroke="currentColor"
 								viewBox="0 0 24 24"
@@ -779,7 +704,7 @@ export default function HomePage() {
 								/>
 							</svg>
 							<span className="text-sm font-bold tracking-wide">
-								{isAutomationRunning ? `AUTO: ${status}` : status || "Ready"}
+								{status || "Ready"}
 							</span>
 						</div>
 						<div className="flex items-center gap-2 overflow-x-auto p-2">
@@ -823,8 +748,8 @@ export default function HomePage() {
 
 					<div className="grid grid-cols-2 lg:grid-cols-6 gap-4">
 						<button
-							onClick={() => apiCall("auth", "POST")}
-							disabled={loading || isAuthPolling || isFilterPolling || isAutomationRunning}
+							onClick={() => handleAction("auth", "POST")}
+							disabled={loading || isAuthPolling || isFilterPolling}
 							className="group relative overflow-hidden bg-orange-500 hover:bg-orange-600 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-orange-200 active:scale-95 disabled:opacity-50"
 						>
 							<span className="relative z-10 flex items-center justify-center gap-2">
@@ -844,8 +769,8 @@ export default function HomePage() {
 							</span>
 						</button>
 						<button
-							onClick={() => apiCall("discover", "POST")}
-							disabled={loading || isAuthPolling || isFilterPolling || isAutomationRunning}
+							onClick={() => handleAction("discover", "POST")}
+							disabled={loading || isAuthPolling || isFilterPolling}
 							className="group relative overflow-hidden bg-blue-600 hover:bg-blue-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-blue-200 active:scale-95 disabled:opacity-50"
 						>
 							<span className="relative z-10 flex items-center justify-center gap-2">
@@ -866,8 +791,8 @@ export default function HomePage() {
 							</span>
 						</button>
 						<button
-							onClick={() => apiCall("filter", "POST")}
-							disabled={loading || isAuthPolling || isFilterPolling || isAutomationRunning}
+							onClick={() => handleAction("filter", "POST")}
+							disabled={loading || isAuthPolling || isFilterPolling}
 							className="group relative overflow-hidden bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-emerald-200 active:scale-95 disabled:opacity-50"
 						>
 							<span className="relative z-10 flex items-center justify-center gap-2">
@@ -887,8 +812,8 @@ export default function HomePage() {
 							</span>
 						</button>
 						<button
-							onClick={() => apiCall("plan", "POST", { resources: activeResources, workspaceId: "" })}
-							disabled={loading || isAuthPolling || isFilterPolling || isAutomationRunning}
+							onClick={() => handleAction("plan", "POST")}
+							disabled={loading || isAuthPolling || isFilterPolling}
 							className="group relative overflow-hidden bg-purple-600 hover:bg-purple-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-purple-200 active:scale-95 disabled:opacity-50"
 						>
 							<span className="relative z-10 flex items-center justify-center gap-2">
@@ -909,8 +834,8 @@ export default function HomePage() {
 							</span>
 						</button>
 						<button
-							onClick={() => apiCall("migrate", "POST")}
-							disabled={loading || isAuthPolling || isFilterPolling || isAutomationRunning}
+							onClick={() => handleAction("migrate", "POST")}
+							disabled={loading || isAuthPolling || isFilterPolling}
 							className="group relative overflow-hidden bg-teal-600 hover:bg-teal-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-teal-200 active:scale-95 disabled:opacity-50"
 						>
 							<span className="relative z-10 flex items-center justify-center gap-2">
@@ -933,7 +858,7 @@ export default function HomePage() {
 							className="lg:col-start-6 h-full"
 						>
 							<button
-								disabled={loading || isAuthPolling || isFilterPolling || !projectID || isAutomationRunning}
+								disabled={loading || isAuthPolling || isFilterPolling || !projectID}
 								className="w-full h-full group relative overflow-hidden bg-gray-600 hover:bg-gray-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-gray-200 active:scale-95 disabled:opacity-50"
 							>
 								<span className="relative z-10 flex items-center justify-center gap-2">
@@ -959,7 +884,7 @@ export default function HomePage() {
 							className="lg:col-start-1 h-full"
 						>
 							<button
-								disabled={loading || isAuthPolling || isFilterPolling || !projectID || isAutomationRunning}
+								disabled={loading || isAuthPolling || isFilterPolling || !projectID}
 								className="w-full h-full group relative overflow-hidden bg-cyan-600 hover:bg-cyan-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-cyan-200 active:scale-95 disabled:opacity-50"
 							>
 								<span className="relative z-10 flex items-center justify-center gap-2">
@@ -1395,7 +1320,7 @@ export default function HomePage() {
 										&larr; Back to Edit
 									</button>
 									<button
-										onClick={() => apiCall("apply", "POST", { resources: activeResources, workspaceId: workspaceId })}
+										onClick={() => handleAction("apply")}
 										disabled={loading}
 										className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-md text-sm font-bold transition-all disabled:opacity-50 active:scale-95 flex items-center gap-2"
 									>
