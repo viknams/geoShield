@@ -1,10 +1,19 @@
 "use client";
 
-import { useState, useEffect, useRef, FormEvent } from "react";
+import { useState, useEffect, useRef, FormEvent, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 
-export default function StreamingPage() {
+export default function StreamingPageWrapper() {
+	return (
+		// Wrap the component that uses useSearchParams in a Suspense boundary
+		<Suspense fallback={<StreamingPageLoading />}>
+			<StreamingPage />
+		</Suspense>
+	);
+}
+
+function StreamingPage() {
 	const searchParams = useSearchParams();
 	const [projectID, setProjectID] = useState<string>("");
 	const [streamingProjectID, setStreamingProjectID] = useState<string>(""); // For the actual streaming project
@@ -201,6 +210,52 @@ export default function StreamingPage() {
 					</button>
 				</form>
 
+			</div>
+		</main>
+	);
+}
+
+function StreamingPageLoading() {
+	return (
+		<main className="min-h-screen bg-slate-900 text-slate-300 p-4 md:p-8 font-sans">
+			<div className="max-w-6xl mx-auto space-y-6">
+				<header className="flex items-center justify-between gap-4 bg-slate-800/50 p-6 rounded-2xl shadow-sm border border-slate-700">
+					<div>
+						<h1 className="text-2xl font-extrabold text-slate-100 tracking-tight">
+							Pub/Sub Message Stream
+						</h1>
+						<p className="text-sm text-slate-400 font-medium">
+							Loading stream details...
+						</p>
+					</div>
+					<a
+						href={`/`}
+						className="text-sm font-bold text-blue-400 hover:underline"
+					>
+						&larr; Back to Main Control Plane
+					</a>
+				</header>
+
+				<div className="bg-slate-800/50 rounded-2xl shadow-2xl border border-slate-800 overflow-hidden">
+					<div className="bg-slate-800 px-6 py-4 border-b border-slate-700 flex items-center justify-between">
+						<div className="flex items-center gap-3">
+							<div className="flex gap-1.5">
+								<div className="w-3 h-3 rounded-full bg-red-500" />
+								<div className="w-3 h-3 rounded-full bg-yellow-500" />
+								<div className="w-3 h-3 rounded-full bg-green-500" />
+							</div>
+							<span className="text-xs font-black text-gray-400 uppercase tracking-widest ml-4">
+								Live Stream
+							</span>
+						</div>
+						<div className="flex items-center gap-2 text-xs font-bold text-slate-400">
+							Status: Connecting...
+						</div>
+					</div>
+					<div className="p-8 overflow-y-auto h-[55vh] custom-scrollbar bg-black/20 animate-pulse">
+						<div className="text-slate-500 text-center py-10">Initializing connection...</div>
+					</div>
+				</div>
 			</div>
 		</main>
 	);

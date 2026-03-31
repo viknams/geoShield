@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, Suspense } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 const GCP_REGIONS = [
@@ -40,7 +40,16 @@ const GCP_REGIONS = [
 	"us-west4",
 ];
 
-export default function HomePage() {
+export default function HomePageWrapper() {
+	return (
+		// Wrap the component that uses useSearchParams in a Suspense boundary
+		<Suspense fallback={<HomePageLoading />}>
+			<HomePageClient />
+		</Suspense>
+	);
+}
+
+function HomePageClient() {
 	const searchParams = useSearchParams();
 	const [projectID, setProjectID] = useState("");
 	const [status, setStatus] = useState("");
@@ -55,10 +64,6 @@ export default function HomePage() {
 		"none" | "auth" | "discovered" | "active" | "plan" | "apply"
 	>("none");
 	const [loading, setLoading] = useState(false);
-	const [isAuthPolling, setIsAuthPolling] = useState(false);
-	const [isFilterPolling, setIsFilterPolling] = useState(false);
-	const [isPlanPolling, setIsPlanPolling] = useState(false);
-	const [isApplyPolling, setIsApplyPolling] = useState(false);
 	const [isAutomationRunning, setIsAutomationRunning] = useState(false);
 	const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({});
 	// State to store the latest risk message for prominent display
@@ -244,164 +249,26 @@ export default function HomePage() {
 				options,
 			);
 
-			// If the request was aborted, don't process the response.
 			if (signal.aborted) return;
 
 			const data = await res.json();
 			if (data.error) throw new Error(data.error);
 
-			if (endpoint === "apply") {
-				setStatus("Apply process started.");
-				setIsApplyPolling(true);
-			} else if (endpoint === "auth") {
-				setStatus(data.status);
-				setViewMode("auth");
-				setIsAuthPolling(true);
-			} else if (endpoint === "discover") {
-				setStatus("Discovery complete. Fetching resources...");
-				await fetchResources();
-				setViewMode("discovered");
-			} else if (endpoint === "filter") {
-				setStatus("Filter process started.");
-				setIsFilterPolling(true);
-			} else if (endpoint === "plan") {
-				setStatus("Plan process started.");
-				setIsPlanPolling(true);
-			} else {
-				setStatus(data.status);
-			}
+			setStatus(data.status || `Task ${endpoint} started.`);
+
 		} catch (err: any) {
 			if (err.name === "AbortError") {
 				console.log("Fetch aborted by user.");
 				setStatus("Operation cancelled.");
-				setLoading(false);
-				return;
+			} else {
+				setStatus(`Error: ${err.message}`);
 			}
-			setStatus(`Error: ${err.message}`);
-			setLoading(false); // Ensure loading is stopped on any error
-		}
-		// For polling operations, the useEffect hook will set loading to false.
-		if (endpoint !== "filter" && endpoint !== "auth" && endpoint !== "plan" && endpoint !== "apply" && endpoint !== "migrate" && endpoint !== "unlock") {
 			setLoading(false);
+			throw err; // Re-throw to be caught by automation engine
+		} finally {
+			// Don't set loading to false here for long-running tasks
 		}
 	};
-
-	// Poll for auth status
-	useEffect(() => {
-		let interval: NodeJS.Timeout;
-		if (isAuthPolling) {
-			interval = setInterval(async () => {
-				try {
-					const res = await fetch(
-						`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/auth/status`,
-					);
-					const data = await res.json();
-					setStatus(data.status);
-					if (data.status === "Completed") {
-						setLoading(false);
-						setIsAuthPolling(false);
-						setViewMode("auth");
-					}
-				} catch (e) {
-					console.error("Polling failed", e);
-					setIsAuthPolling(false);
-					setLoading(false);
-				}
-			}, 2000);
-		}
-		return () => clearInterval(interval);
-	}, [isAuthPolling]);
-
-	// Poll for filter status
-	useEffect(() => {
-		let interval: NodeJS.Timeout;
-		if (isFilterPolling) {
-			interval = setInterval(async () => {
-				try {
-					const res = await fetch(
-						`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/filter/status`,
-					);
-					const data = await res.json();
-					setStatus(data.status);
-					if (data.status === "Filter process completed.") {
-						setLoading(false);
-						setIsFilterPolling(false);
-						await fetchActiveResources();
-						setViewMode("active");
-					}
-				} catch (e) {
-					console.error("Polling failed", e);
-					setIsFilterPolling(false);
-					setLoading(false);
-				}
-			}, 1000);
-		}
-		return () => clearInterval(interval);
-	}, [isFilterPolling]);
-
-	// Poll for plan status
-	useEffect(() => {
-		let interval: NodeJS.Timeout;
-		if (isPlanPolling) {
-			interval = setInterval(async () => {
-				try {
-					const res = await fetch(
-						`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/plan/status`,
-					);
-					const data = await res.json();
-
-					if (data.status.startsWith("COMPLETED::")) {
-						const parts = data.status.split("::");
-						const newWorkspaceId = parts[1];
-						const finalPlanOutput = parts[2];
-						setWorkspaceId(newWorkspaceId);
-						setPlanOutput(finalPlanOutput);
-						setStatus("Infrastructure plan generated successfully.");
-						setLoading(false);
-						setIsPlanPolling(false);
-						setViewMode("plan");
-					} else {
-						setStatus(data.status);
-					}
-				} catch (e) {
-					console.error("Polling failed", e);
-					setIsPlanPolling(false);
-					setLoading(false);
-				}
-			}, 1000);
-		}
-		return () => clearInterval(interval);
-	}, [isPlanPolling]);
-
-	// Poll for apply status
-	useEffect(() => {
-		let interval: NodeJS.Timeout;
-		if (isApplyPolling) {
-			interval = setInterval(async () => {
-				try {
-					const res = await fetch(
-						`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/plan/status`,
-					);
-					const data = await res.json();
-					if (data.status.startsWith("APPLY_COMPLETED::")) {
-						const finalApplyOutput = data.status.substring("APPLY_COMPLETED::".length);
-						setApplyOutput(finalApplyOutput);
-						setStatus("Infrastructure apply completed successfully.");
-						setLoading(false);
-						setIsApplyPolling(false);
-						setViewMode("apply");
-					} else {
-						setStatus(data.status);
-					}
-				} catch (e) {
-					console.error("Polling failed", e);
-					setIsApplyPolling(false); // Stop polling on error
-					setLoading(false);
-				}
-			}, 1000);
-		}
-		return () => clearInterval(interval);
-	}, [isApplyPolling]);
 
 	// Clear session cache when project changes
 	useEffect(() => {
@@ -448,34 +315,51 @@ export default function HomePage() {
 		}
 	};
 
-	// --- AUTOMATION ENGINE ---
-	const automationHasRun = useRef(false);
-
-	const waitForPolling = (
-		startPolling: () => void,
-		stopPolling: () => void,
-		timeout = 60000, // 60-second timeout per step
-	) => {
+	const pollStatus = (statusUrl: string, completionPrefix: string, timeout: number) => {
 		return new Promise<void>((resolve, reject) => {
-			startPolling();
 			const startTime = Date.now();
-			const interval = setInterval(() => {
-				// The polling useEffect sets its own state to false when done
-				if (!isAuthPolling && !isFilterPolling && !isPlanPolling && !isApplyPolling) {
-					clearInterval(interval);
-					resolve();
-				} else if (Date.now() - startTime > timeout) {
-					clearInterval(interval);
-					stopPolling();
-					reject(new Error("Automation step timed out."));
+			let intervalId: NodeJS.Timeout;
+
+			const checkStatus = async () => {
+				if (Date.now() - startTime > timeout) {
+					clearInterval(intervalId);
+					reject(new Error(`Polling timed out after ${timeout / 1000}s`));
+					return;
 				}
-			}, 1500);
+
+				try {
+					const res = await fetch(statusUrl);
+					const data = await res.json();
+					setStatus(data.status);
+
+					if (data.status.startsWith(completionPrefix)) {
+						clearInterval(intervalId);
+						if (completionPrefix === "COMPLETED::") {
+							const parts = data.status.split("::");
+							setWorkspaceId(parts[1]);
+							setPlanOutput(parts[2]);
+						} else if (completionPrefix === "APPLY_COMPLETED::") {
+							const finalApplyOutput = data.status.substring("APPLY_COMPLETED::".length);
+							setApplyOutput(finalApplyOutput);
+						}
+						resolve();
+					}
+				} catch (e) {
+					console.error("Polling check failed:", e);
+					// Don't reject here, allow it to retry until timeout
+				}
+			};
+
+			intervalId = setInterval(checkStatus, 2000); // Poll every 2 seconds
 		});
 	};
 
+
+	// --- AUTOMATION ENGINE ---
 	const runAutomationSequence = async (riskLevel: string) => {
 		if (!projectID || isAutomationRunning) return;
 		setIsAutomationRunning(true);
+		setLoading(true);
 		setStatus(`Automation started for Risk Level ${riskLevel}`);
 
 		try {
@@ -483,7 +367,8 @@ export default function HomePage() {
 			if (riskLevel >= "R1") {
 				setStatus("Step 1: Authenticating...");
 				await apiCall("auth", "POST");
-				await waitForPolling(() => setIsAuthPolling(true), () => setIsAuthPolling(false));
+				await pollStatus(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/auth/status`, "Completed", 45 * 1000);
+				setViewMode("auth");
 
 				setStatus("Step 2: Discovering resources...");
 				await apiCall("discover", "POST");
@@ -495,13 +380,13 @@ export default function HomePage() {
 			if (riskLevel >= "R2") {
 				setStatus("Step 3: Filtering critical resources...");
 				await apiCall("filter", "POST");
-				await waitForPolling(() => setIsFilterPolling(true), () => setIsFilterPolling(false));
+				await pollStatus(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/filter/status`, "Filter process completed.", 60 * 1000);
 				await fetchActiveResources();
 				setViewMode("active");
 
 				setStatus("Step 4: Generating Terraform plan...");
 				await apiCall("plan", "POST", { resources: activeResources, workspaceId: "" });
-				await waitForPolling(() => setIsPlanPolling(true), () => setIsPlanPolling(false));
+				await pollStatus(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/plan/status`, "COMPLETED::", 5 * 60 * 1000);
 				setViewMode("plan");
 			}
 
@@ -509,7 +394,7 @@ export default function HomePage() {
 			if (riskLevel >= "R3") {
 				setStatus("Step 5: Applying Terraform plan...");
 				await apiCall("apply", "POST", { resources: activeResources, workspaceId: workspaceId });
-				await waitForPolling(() => setIsApplyPolling(true), () => setIsApplyPolling(false));
+				await pollStatus(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/plan/status`, "APPLY_COMPLETED::", 15 * 60 * 1000);
 				setViewMode("apply");
 			}
 
@@ -517,14 +402,14 @@ export default function HomePage() {
 			if (riskLevel >= "R4") {
 				setStatus("Step 6: Starting application migration...");
 				await apiCall("migrate", "POST");
-				// You would add migration polling here if it exists
+				await pollStatus(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/migrate/status`, "Completed", 2 * 60 * 60 * 1000);
 			}
-
 			setStatus(`Automation completed for Risk Level ${riskLevel}.`);
 		} catch (error: any) {
 			setStatus(`Automation failed: ${error.message}`);
 		} finally {
 			setIsAutomationRunning(false);
+			setLoading(false);
 		}
 	};
 
@@ -824,7 +709,7 @@ export default function HomePage() {
 					<div className="grid grid-cols-2 lg:grid-cols-6 gap-4">
 						<button
 							onClick={() => apiCall("auth", "POST")}
-							disabled={loading || isAuthPolling || isFilterPolling || isAutomationRunning}
+							disabled={loading || isAutomationRunning}
 							className="group relative overflow-hidden bg-orange-500 hover:bg-orange-600 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-orange-200 active:scale-95 disabled:opacity-50"
 						>
 							<span className="relative z-10 flex items-center justify-center gap-2">
@@ -845,7 +730,7 @@ export default function HomePage() {
 						</button>
 						<button
 							onClick={() => apiCall("discover", "POST")}
-							disabled={loading || isAuthPolling || isFilterPolling || isAutomationRunning}
+							disabled={loading || isAutomationRunning}
 							className="group relative overflow-hidden bg-blue-600 hover:bg-blue-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-blue-200 active:scale-95 disabled:opacity-50"
 						>
 							<span className="relative z-10 flex items-center justify-center gap-2">
@@ -867,7 +752,7 @@ export default function HomePage() {
 						</button>
 						<button
 							onClick={() => apiCall("filter", "POST")}
-							disabled={loading || isAuthPolling || isFilterPolling || isAutomationRunning}
+							disabled={loading || isAutomationRunning}
 							className="group relative overflow-hidden bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-emerald-200 active:scale-95 disabled:opacity-50"
 						>
 							<span className="relative z-10 flex items-center justify-center gap-2">
@@ -888,7 +773,7 @@ export default function HomePage() {
 						</button>
 						<button
 							onClick={() => apiCall("plan", "POST", { resources: activeResources, workspaceId: "" })}
-							disabled={loading || isAuthPolling || isFilterPolling || isAutomationRunning}
+							disabled={loading || isAutomationRunning}
 							className="group relative overflow-hidden bg-purple-600 hover:bg-purple-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-purple-200 active:scale-95 disabled:opacity-50"
 						>
 							<span className="relative z-10 flex items-center justify-center gap-2">
@@ -910,7 +795,7 @@ export default function HomePage() {
 						</button>
 						<button
 							onClick={() => apiCall("migrate", "POST")}
-							disabled={loading || isAuthPolling || isFilterPolling || isAutomationRunning}
+							disabled={loading || isAutomationRunning}
 							className="group relative overflow-hidden bg-teal-600 hover:bg-teal-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-teal-200 active:scale-95 disabled:opacity-50"
 						>
 							<span className="relative z-10 flex items-center justify-center gap-2">
@@ -933,7 +818,7 @@ export default function HomePage() {
 							className="lg:col-start-6 h-full"
 						>
 							<button
-								disabled={loading || isAuthPolling || isFilterPolling || !projectID || isAutomationRunning}
+								disabled={loading || !projectID || isAutomationRunning}
 								className="w-full h-full group relative overflow-hidden bg-gray-600 hover:bg-gray-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-gray-200 active:scale-95 disabled:opacity-50"
 							>
 								<span className="relative z-10 flex items-center justify-center gap-2">
@@ -959,7 +844,7 @@ export default function HomePage() {
 							className="lg:col-start-1 h-full"
 						>
 							<button
-								disabled={loading || isAuthPolling || isFilterPolling || !projectID || isAutomationRunning}
+								disabled={loading || !projectID || isAutomationRunning}
 								className="w-full h-full group relative overflow-hidden bg-cyan-600 hover:bg-cyan-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-cyan-200 active:scale-95 disabled:opacity-50"
 							>
 								<span className="relative z-10 flex items-center justify-center gap-2">
@@ -1508,6 +1393,33 @@ export default function HomePage() {
 					z-index: 10; /* Ensure tooltip is on top */
 				}
 			`}</style>
+		</main>
+	);
+}
+
+function HomePageLoading() {
+	return (
+		<main className="min-h-screen bg-gray-50 text-slate-900 p-4 md:p-8 font-sans">
+			<div className="max-w-7xl mx-auto space-y-8">
+				<header className="flex flex-col md:flex-row items-center justify-between gap-4">
+					<div className="flex items-center gap-3">
+						<svg className="w-10 h-10 text-blue-600" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2L2 7V17L12 22L22 17V7L12 2Z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"/><path d="M2 7L12 12L22 7" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"/><path d="M12 22V12" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"/></svg>
+						<div>
+							<h1 className="text-2xl font-extrabold text-slate-800 tracking-tight">
+								GeoShield
+							</h1>
+							<p className="text-sm text-slate-500 font-medium whitespace-nowrap">
+								Cloud Landing Zone Provisioner
+							</p>
+						</div>
+					</div>
+					<div className="w-full md:flex-1 md:max-w-md h-12 bg-slate-200 rounded-xl animate-pulse" />
+				</header>
+				<div className="bg-white p-20 rounded-2xl border-2 border-dashed border-blue-100 flex flex-col items-center justify-center text-center space-y-4 animate-pulse">
+					<h3 className="text-lg font-bold text-slate-700">Loading Project Details...</h3>
+					<p className="text-sm text-slate-500 max-w-md">Please wait while we set up the control plane.</p>
+				</div>
+			</div>
 		</main>
 	);
 }

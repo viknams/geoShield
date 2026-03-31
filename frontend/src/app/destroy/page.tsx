@@ -1,10 +1,19 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 
-export default function DestroyPage() {
+export default function DestroyPageWrapper() {
+	return (
+		// Wrap the component that uses useSearchParams in a Suspense boundary
+		<Suspense fallback={<DestroyPageLoading />}>
+			<DestroyPage />
+		</Suspense>
+	);
+}
+
+function DestroyPage() {
 	const [projectID, setProjectID] = useState("");
 	const [status, setStatus] = useState(
 		"Loading managed resources...",
@@ -417,6 +426,29 @@ export default function DestroyPage() {
 						})}
 					</div>
 				</section>
+			</div>
+		</main>
+	);
+}
+
+function DestroyPageLoading() {
+	return (
+		<main className="min-h-screen bg-gray-50 text-slate-900 p-4 md:p-8 font-sans">
+			<div className="max-w-6xl mx-auto space-y-6">
+				<header className="flex items-center justify-between gap-4 bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
+					<div>
+						<h1 className="text-2xl font-extrabold text-slate-800 tracking-tight">
+							Destroy Resources
+						</h1>
+						<p className="text-sm text-slate-500 font-medium">
+							Decommission infrastructure managed by GeoShield.
+						</p>
+					</div>
+				</header>
+				<div className="bg-white p-20 rounded-2xl border-2 border-dashed border-blue-100 flex flex-col items-center justify-center text-center space-y-4 animate-pulse">
+					<h3 className="text-lg font-bold text-slate-700">Loading Managed Resources...</h3>
+					<p className="text-sm text-slate-500 max-w-md">Please wait while we fetch the details for your project.</p>
+				</div>
 			</div>
 		</main>
 	);
