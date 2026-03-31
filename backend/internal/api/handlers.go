@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/csv"
@@ -47,12 +48,14 @@ type APIHandler struct {
 	TerraformModuleVersion string
 	ManagedByLabel         string
 	DefaultRegion          string
+	AppMigrationScriptPath string
 
 	// Track auth status
-	mu           sync.RWMutex
-	authStatus   string
-	filterStatus string
-	planStatus   string
+	mu              sync.RWMutex
+	authStatus      string
+	filterStatus    string
+	planStatus      string
+	migrationStatus string
 }
 
 func (h *APIHandler) AuthGCP(c *gin.Context) {
@@ -127,6 +130,12 @@ func (h *APIHandler) GetPlanStatus(c *gin.Context) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	c.JSON(http.StatusOK, gin.H{"status": h.planStatus})
+}
+
+func (h *APIHandler) GetMigrationStatus(c *gin.Context) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	c.JSON(http.StatusOK, gin.H{"status": h.migrationStatus})
 }
 
 func (h *APIHandler) DiscoverGCP(c *gin.Context) {
@@ -491,7 +500,7 @@ func (h *APIHandler) mapFromUnifiedResource(serviceType string, header []string,
 	case "container.Cluster":
 		return "gke-cluster", GKEData{projectID, region, newResName, "default", "default", labels, fastRef}, newResName
 	case "sqladmin.Instance":
-		return "cloudsql-instance", SQLData{projectID, region, newResName, "default", "POSTGRES_14", "db-f1-micro", labels, fastRef}, newResName
+		return "cloudsql-instance", SQLData{projectID, region, newResName, "default", "POSTGRES_18", "db-f1-micro", labels, fastRef}, newResName
 	case "compute.ForwardingRule":
 		return "net-lb-app-ext", LBData{projectID, region, newResName, fastRef, labels}, newResName
 	default:
@@ -535,6 +544,11 @@ func (h *APIHandler) PlanTerraform(c *gin.Context) {
 		runID := uuid.New().String()
 		workspaceDir := filepath.Join(h.OutputDir, "run-"+runID)
 		log.Printf("Creating ephemeral workspace: %s", workspaceDir)
+		if err := os.MkdirAll(workspaceDir, 0755); err != nil {
+			log.Printf("Error creating ephemeral workspace: %v", err)
+			h.planStatus = fmt.Sprintf("Error: Failed to create workspace: %v", err)
+			return
+		}
 
 		config := generator.Config{
 			Cloud:                h.TerraformCloud,
@@ -576,6 +590,7 @@ func (h *APIHandler) PlanTerraform(c *gin.Context) {
 		}
 
 		var combinedOutput string
+		var finalPlanOutput string // Use a separate variable for the final plan content
 		for i, res := range config.Resources {
 			path := filepath.Join(workspaceDir, config.FolderName, res.Type, res.Name)
 			displayType := res.Type
@@ -591,11 +606,11 @@ func (h *APIHandler) PlanTerraform(c *gin.Context) {
 
 			prefixPath := filepath.Join(config.FolderName, res.Type, res.Name)
 			initCmd := exec.CommandContext(ctx, "terraform", "init", "-no-color", fmt.Sprintf("-backend-config=bucket=%s", config.TerraformStateBucket), fmt.Sprintf("-backend-config=prefix=%s", prefixPath))
-			initCmd.Dir = path
-			if output, err := initCmd.CombinedOutput(); err != nil {
-				log.Printf("-> Terraform init failed for %s: %v", res.Name, err)
-				combinedOutput += fmt.Sprintf("=== Init Error for %s: %s ===\n%s\n", displayType, res.Name, string(output))
-				continue
+			initCmd.Dir = path // Set working directory
+			initOutput, err := h.runCommandAndStreamStatus(initCmd, fmt.Sprintf("Init for %s: %s", displayType, res.Name))
+			combinedOutput += initOutput
+			if err != nil {
+				continue // Stop processing this resource if init fails
 			}
 
 			status = fmt.Sprintf("[%d/%d] Generating Terraform plan file for %s: %s", i+1, len(config.Resources), displayType, res.Name)
@@ -606,11 +621,12 @@ func (h *APIHandler) PlanTerraform(c *gin.Context) {
 
 			planFilePath := filepath.Join(path, "terraform.tfplan")
 			planCmd := exec.CommandContext(ctx, "terraform", "plan", "-no-color", "-out="+planFilePath)
-			planCmd.Dir = path
-			if output, err := planCmd.CombinedOutput(); err != nil {
-				log.Printf("-> Terraform plan failed for %s: %v", res.Name, err)
-				combinedOutput += fmt.Sprintf("=== Plan Error for %s: %s ===\n%s\n", displayType, res.Name, string(output))
-				continue
+			planCmd.Dir = path // Set working directory
+			planOutput, err := h.runCommandAndStreamStatus(planCmd, fmt.Sprintf("Plan for %s: %s", displayType, res.Name))
+			combinedOutput += planOutput
+			if err != nil {
+				finalPlanOutput += planOutput // Capture the plan error for the UI
+				continue                      // Stop processing this resource if plan fails
 			}
 
 			showCmd := exec.CommandContext(ctx, "terraform", "show", "-no-color", planFilePath)
@@ -618,19 +634,19 @@ func (h *APIHandler) PlanTerraform(c *gin.Context) {
 			showOutput, err := showCmd.CombinedOutput()
 			if err != nil {
 				log.Printf("-> Terraform show failed for %s: %v", res.Name, err)
-				combinedOutput += fmt.Sprintf("=== Show Plan Error for %s: %s ===\n%s\n", displayType, res.Name, string(showOutput))
+				finalPlanOutput += fmt.Sprintf("=== Show Plan Error for %s: %s ===\n%s\n", displayType, res.Name, string(showOutput))
 				continue
 			}
-			combinedOutput += fmt.Sprintf("=== Plan for %s: %s ===\n%s\n", displayType, res.Name, string(showOutput))
+			finalPlanOutput += fmt.Sprintf("=== Plan for %s: %s ===\n%s\n", displayType, res.Name, string(showOutput))
 		}
 
 		if len(config.Resources) == 0 {
-			combinedOutput = "No supported resources selected for planning."
+			finalPlanOutput = "No supported resources selected for planning."
 		}
 
 		log.Printf("Completed planning for %d resources.", len(config.Resources))
 		h.mu.Lock()
-		h.planStatus = fmt.Sprintf("COMPLETED::%s::%s", runID, combinedOutput)
+		h.planStatus = fmt.Sprintf("COMPLETED::%s::%s", runID, finalPlanOutput)
 		h.mu.Unlock()
 	}()
 
@@ -654,102 +670,144 @@ func (h *APIHandler) ApplyTerraform(c *gin.Context) {
 		return
 	}
 
-	ctx := context.Background()
-	client, err := storage.NewClient(ctx)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to create storage client: %v", err)})
-		return
-	}
-	defer client.Close()
-
-	// --- Start: Use Existing Workspace ---
-	workspaceDir := filepath.Join(h.OutputDir, "run-"+payload.WorkspaceID)
-	log.Printf("Using existing workspace for apply: %s", workspaceDir)
-	if _, err := os.Stat(workspaceDir); os.IsNotExist(err) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Workspace not found. It may have expired or been deleted. Please generate a new plan."})
-		return
-	}
-
-	// Defer cleanup to ensure workspace is always removed
-	defer func() {
-		log.Printf("Cleaning up ephemeral workspace for apply: %s", workspaceDir)
-		os.RemoveAll(workspaceDir)
-	}()
-	// --- End: Ephemeral Workspace ---
-
-	projectID := c.Query("project")
-
-	config := generator.Config{
-		Cloud:       h.TerraformCloud,
-		OrgName:     h.TerraformOrgName,
-		FolderName:  h.TerraformFolderName,
-		ProjectName: projectID,
-		// PathPattern now generates inside the unique workspace
-		PathPattern:          "{{.FolderName}}/{{.Type}}/{{.Name}}",
-		TerraformStateBucket: h.TerraformStateBucket,
-	}
-
-	for serviceType, rows := range payload.Resources {
-		if len(rows) < 2 {
-			continue // malformed payload for serviceType
+	go func() {
+		ctx := context.Background()
+		client, err := storage.NewClient(ctx)
+		if err != nil {
+			h.planStatus = fmt.Sprintf("Error: failed to create storage client: %v", err)
+			return
 		}
-		header := rows[0]
-		for i := 1; i < len(rows); i++ {
-			row := rows[i]
-			mappedType, resData, resName := h.mapFromUnifiedResource(serviceType, header, row)
-			if mappedType == "" {
-				continue // Skip unsupported
+		defer client.Close()
+
+		// --- Start: Use Existing Workspace ---
+		workspaceDir := filepath.Join(h.OutputDir, "run-"+payload.WorkspaceID)
+		log.Printf("Using existing workspace for apply: %s", workspaceDir)
+		if _, err := os.Stat(workspaceDir); os.IsNotExist(err) {
+			h.planStatus = "Error: Workspace not found. It may have expired or been deleted. Please generate a new plan."
+			return
+		}
+
+		// Defer cleanup to ensure workspace is always removed
+		defer func() {
+			log.Printf("Cleaning up ephemeral workspace for apply: %s", workspaceDir)
+			os.RemoveAll(workspaceDir)
+		}()
+		// --- End: Ephemeral Workspace ---
+
+		projectID := c.Query("project")
+
+		config := generator.Config{
+			Cloud:                h.TerraformCloud,
+			OrgName:              h.TerraformOrgName,
+			FolderName:           h.TerraformFolderName,
+			ProjectName:          projectID,
+			PathPattern:          "{{.FolderName}}/{{.Type}}/{{.Name}}",
+			TerraformStateBucket: h.TerraformStateBucket,
+		}
+
+		for serviceType, rows := range payload.Resources {
+			if len(rows) < 2 {
+				continue
 			}
-
-			config.Resources = append(config.Resources, generator.Resource{
-				Type: mappedType,
-				Name: resName,
-				Data: resData,
-			})
+			header := rows[0]
+			for i := 1; i < len(rows); i++ {
+				row := rows[i]
+				mappedType, resData, resName := h.mapFromUnifiedResource(serviceType, header, row)
+				if mappedType == "" {
+					continue
+				}
+				config.Resources = append(config.Resources, generator.Resource{
+					Type: mappedType,
+					Name: resName,
+					Data: resData,
+				})
+			}
 		}
-	}
 
-	var combinedOutput string
-	for i, res := range config.Resources {
-		// Path is now inside the unique workspace
-		path := filepath.Join(workspaceDir, config.FolderName, res.Type, res.Name)
+		var combinedOutput string
+		for i, res := range config.Resources {
+			path := filepath.Join(workspaceDir, config.FolderName, res.Type, res.Name)
 
-		displayType := res.Type
-		if displayType == "fallback" {
+			displayType := res.Type
 			if fbData, ok := res.Data.(FallbackData); ok {
 				displayType = fbData.ServiceType
+			}
+
+			planFilePath := filepath.Join(path, "terraform.tfplan")
+			status := fmt.Sprintf("[%d/%d] Applying Terraform plan for %s: %s", i+1, len(config.Resources), displayType, res.Name)
+			log.Println(status)
+			h.mu.Lock()
+			h.planStatus = status
+			h.mu.Unlock()
+
+			applyCmd := exec.CommandContext(ctx, "terraform", "apply", "-no-color", "-auto-approve", planFilePath)
+			applyCmd.Dir = path
+
+			output, err := h.runCommandAndStreamStatus(applyCmd, fmt.Sprintf("Apply for %s: %s", displayType, res.Name))
+			combinedOutput += output
+			if err != nil {
+				log.Printf("-> Terraform apply failed for %s: %v", res.Name, err)
 			} else {
-				displayType = "generic-resource"
+				gcsPath := filepath.Join(config.FolderName, res.Type, res.Name)
+				log.Printf("Uploading generated code for %s to gs://%s/%s", res.Name, h.TerraformStateBucket, gcsPath)
+				if uploadErr := uploadDirectoryToGCS(ctx, client, h.TerraformStateBucket, path, gcsPath); uploadErr != nil {
+					log.Printf("-> Failed to upload generated code for %s: %v", res.Name, uploadErr)
+					combinedOutput += fmt.Sprintf("\n--- WARNING: Failed to upload generated code to GCS for %s ---\n", res.Name)
+				}
 			}
 		}
 
-		// --- Start: Apply Saved Plan File ---
-		planFilePath := filepath.Join(path, "terraform.tfplan")
-		log.Printf("[%d/%d] Applying Terraform plan for %s: %s", i+1, len(config.Resources), displayType, res.Name)
-		applyCmd := exec.Command("terraform", "apply", "-no-color", planFilePath)
-		applyCmd.Dir = path
-		output, err := applyCmd.CombinedOutput()
-
-		combinedOutput += fmt.Sprintf("=== Apply for %s: %s ===\n%s\n", displayType, res.Name, string(output))
-		if err != nil {
-			log.Printf("-> Terraform apply failed for %s: %v", res.Name, err)
-		} else {
-			gcsPath := filepath.Join(config.FolderName, res.Type, res.Name)
-			log.Printf("Uploading generated code for %s to gs://%s/%s", res.Name, h.TerraformStateBucket, gcsPath)
-			if uploadErr := uploadDirectoryToGCS(ctx, client, h.TerraformStateBucket, path, gcsPath); uploadErr != nil {
-				log.Printf("-> Failed to upload generated code for %s: %v", res.Name, uploadErr)
-				combinedOutput += fmt.Sprintf("\n--- WARNING: Failed to upload generated code to GCS for %s ---\n", res.Name)
-			}
+		if len(config.Resources) == 0 {
+			combinedOutput = "No supported resources selected for applying."
 		}
 
+		log.Printf("Completed applying for %d resources.", len(config.Resources))
+		h.mu.Lock()
+		h.planStatus = fmt.Sprintf("APPLY_COMPLETED::%s", combinedOutput)
+		h.mu.Unlock()
+	}()
+
+	c.JSON(http.StatusOK, gin.H{"status": "Apply process started."})
+}
+
+// runCommandAndStreamStatus executes a command, streams its stdout/stderr to the planStatus,
+// and returns the combined output as a string.
+func (h *APIHandler) runCommandAndStreamStatus(cmd *exec.Cmd, header string) (string, error) {
+	var outputBuf bytes.Buffer
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Sprintf("Error creating stdout pipe: %v", err), err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Sprintf("Error creating stderr pipe: %v", err), err
 	}
 
-	if len(config.Resources) == 0 {
-		combinedOutput = "No supported resources selected for applying."
+	if err := cmd.Start(); err != nil {
+		return fmt.Sprintf("Error starting command: %v", err), err
 	}
 
-	log.Printf("Completed applying for %d resources.", len(config.Resources))
-	c.JSON(http.StatusOK, gin.H{"apply_output": combinedOutput})
+	// Use a MultiReader to process both stdout and stderr in one loop
+	multiReader := io.MultiReader(stdout, stderr)
+	scanner := bufio.NewScanner(multiReader)
+	for scanner.Scan() {
+		line := scanner.Text()
+		log.Printf("[%s] %s", cmd.Args[0], line)
+		outputBuf.WriteString(line + "\n")
+
+		// Update the shared status for the frontend to poll
+		h.mu.Lock()
+		h.planStatus = line
+		h.mu.Unlock()
+	}
+
+	waitErr := cmd.Wait()
+	if waitErr != nil {
+		log.Printf("Command finished with error: %v", waitErr)
+	}
+
+	return fmt.Sprintf("=== %s ===\n%s\n", header, outputBuf.String()), waitErr
 }
 
 func uploadDirectoryToGCS(ctx context.Context, client *storage.Client, bucketName, localPath, gcsPath string) error {
@@ -882,6 +940,62 @@ func executeTerraformPlan(config generator.Config, workspaceDir string, isDestro
 		combinedOutput += fmt.Sprintf("=== Plan for %s: %s ===\n%s\n", displayType, res.Name, string(showOutput))
 	}
 	return combinedOutput
+}
+
+type UnlockPayload struct {
+	Resources map[string][][]string `json:"resources"`
+}
+
+func (h *APIHandler) ForceUnlockTerraform(c *gin.Context) {
+	var payload UnlockPayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON payload"})
+		return
+	}
+
+	projectID := c.Query("project")
+	if projectID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "project ID is required"})
+		return
+	}
+
+	var combinedOutput string
+	for serviceType, rows := range payload.Resources {
+		if len(rows) < 2 {
+			continue
+		}
+		header := rows[0]
+		for i := 1; i < len(rows); i++ {
+			row := rows[i]
+			_, _, resName := h.mapFromUnifiedResource(serviceType, header, row)
+
+			// We don't need a full workspace, just a temporary directory to run the command
+			tempDir, err := os.MkdirTemp("", "geoshield-unlock-*")
+			if err != nil {
+				combinedOutput += fmt.Sprintf("=== Error creating temp dir for %s ===\n%v\n", resName, err)
+				continue
+			}
+			defer os.RemoveAll(tempDir)
+
+			// The key is to initialize the backend configuration so Terraform knows where to look for the lock.
+			prefix := filepath.Join(h.TerraformFolderName, serviceType, resName)
+			initCmd := exec.Command("terraform", "init", "-no-color", "-reconfigure",
+				fmt.Sprintf("-backend-config=bucket=%s", h.TerraformStateBucket),
+				fmt.Sprintf("-backend-config=prefix=%s", prefix),
+			)
+			initCmd.Dir = tempDir
+			if _, err := initCmd.CombinedOutput(); err != nil {
+				combinedOutput += fmt.Sprintf("=== Init failed for unlock on %s ===\n%v\n", resName, err)
+				continue
+			}
+
+			unlockCmd := exec.Command("terraform", "force-unlock", prefix) // Using the prefix as the lock ID hint
+			unlockCmd.Dir = tempDir
+			output, _ := unlockCmd.CombinedOutput()
+			combinedOutput += fmt.Sprintf("=== Unlock attempt for %s ===\n%s\n", resName, string(output))
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"unlock_output": combinedOutput})
 }
 
 type DestroyPlanPayload struct {
@@ -1220,5 +1334,103 @@ func (h *APIHandler) StreamPubSubMessagesWS(c *gin.Context) {
 			log.Printf("Message received from client: %s", string(p))
 			topic.Publish(ctx, &pubsub.Message{Data: p})
 		}
+	}
+}
+
+type StateRemovalPayload struct {
+	ResourceAddress string `json:"resourceAddress"` // e.g., "google_project_service.service_networking"
+	ServiceType     string `json:"serviceType"`     // e.g., "cloudsql-instance"
+	ResourceName    string `json:"resourceName"`    // e.g., "my-pg-sql-demo"
+}
+
+func (h *APIHandler) RemoveFromState(c *gin.Context) {
+	var payload StateRemovalPayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON payload"})
+		return
+	}
+
+	if payload.ResourceAddress == "" || payload.ServiceType == "" || payload.ResourceName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "resourceAddress, serviceType, and resourceName are required"})
+		return
+	}
+
+	// We need a temporary directory to run terraform commands with the correct backend config
+	tempDir, err := os.MkdirTemp("", "geoshield-staterm-*")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to create temp dir: %v", err)})
+		return
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Initialize the backend so Terraform knows where to find the state
+	prefix := filepath.Join(h.TerraformFolderName, payload.ServiceType, payload.ResourceName)
+	initCmd := exec.Command("terraform", "init", "-no-color", "-reconfigure",
+		fmt.Sprintf("-backend-config=bucket=%s", h.TerraformStateBucket),
+		fmt.Sprintf("-backend-config=prefix=%s", prefix),
+	)
+	initCmd.Dir = tempDir
+	if initOutput, err := initCmd.CombinedOutput(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Terraform init failed", "details": string(initOutput)})
+		return
+	}
+
+	// Run the state rm command
+	stateRmCmd := exec.Command("terraform", "state", "rm", payload.ResourceAddress)
+	stateRmCmd.Dir = tempDir
+	output, err := stateRmCmd.CombinedOutput()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Terraform state rm failed", "details": string(output)})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "Successfully removed resource from state.", "details": string(output)})
+}
+
+func (h *APIHandler) AppMigration(c *gin.Context) {
+	h.mu.Lock()
+	h.migrationStatus = "Starting app migration script..."
+	h.mu.Unlock()
+
+	go func() {
+		if h.AppMigrationScriptPath == "" {
+			errMsg := "Failed: App migration script path is not configured on the server."
+			log.Println("Error:", errMsg)
+			h.mu.Lock()
+			h.migrationStatus = errMsg
+			h.mu.Unlock()
+			// We don't send a response here because the main function already did.
+			return
+		}
+
+		scriptPath := h.AppMigrationScriptPath
+		scriptDir := filepath.Dir(scriptPath)
+		cmd := exec.Command("/bin/sh", scriptPath)
+		cmd.Dir = scriptDir // Set the working directory
+
+		var out bytes.Buffer
+		var stderr bytes.Buffer
+		cmd.Stdout = &out
+		cmd.Stderr = &stderr
+
+		err := cmd.Run()
+
+		h.mu.Lock()
+		defer h.mu.Unlock()
+
+		if err != nil {
+			h.migrationStatus = fmt.Sprintf("Failed: %v\n%s", err, stderr.String())
+		} else {
+			h.migrationStatus = fmt.Sprintf("Completed: %s", out.String())
+		}
+	}()
+
+	// Check for configuration error before returning OK
+	if h.AppMigrationScriptPath == "" {
+		errMsg := "App migration script path is not configured on the server."
+		c.JSON(http.StatusInternalServerError, gin.H{"error": errMsg})
+		return
+	} else {
+		c.JSON(http.StatusOK, gin.H{"status": "App migration script started."})
 	}
 }

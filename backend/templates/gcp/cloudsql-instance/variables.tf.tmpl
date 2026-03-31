@@ -1,17 +1,17 @@
 variable "project_id" {
-  description = "The GCP project ID."
+  description = "The project ID to host the database instance."
   type        = string
   default     = "{{ .ProjectID }}"
 }
 
 variable "db_name" {
-  description = "The name of the SQL instance."
+  description = "The name of the database instance."
   type        = string
   default     = "{{ .DBName }}"
 }
 
 variable "region" {
-  description = "The region for the SQL instance."
+  description = "The region of the database instance."
   type        = string
   default     = "{{ .Region }}"
 }

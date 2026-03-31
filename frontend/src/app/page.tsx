@@ -58,6 +58,7 @@ export default function HomePage() {
 	const [isAuthPolling, setIsAuthPolling] = useState(false);
 	const [isFilterPolling, setIsFilterPolling] = useState(false);
 	const [isPlanPolling, setIsPlanPolling] = useState(false);
+	const [isApplyPolling, setIsApplyPolling] = useState(false);
 	const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({});
 
 	const [bulkRegion, setBulkRegion] = useState("");
@@ -256,9 +257,8 @@ export default function HomePage() {
 			if (data.error) throw new Error(data.error);
 
 			if (endpoint === "apply") {
-				setApplyOutput(data.apply_output);
-				setStatus("Infrastructure apply completed successfully.");
-				setViewMode("apply");
+				setStatus("Apply process started.");
+				setIsApplyPolling(true);
 			} else if (endpoint === "auth") {
 				setStatus(data.status);
 				setViewMode("auth");
@@ -277,16 +277,17 @@ export default function HomePage() {
 				setStatus(data.status);
 			}
 		} catch (err: any) {
-			if (err.name === 'AbortError') {
-				setStatus("Operation cancelled by user.");
-				setViewMode("active");
+			if (err.name === "AbortError") {
+				console.log("Fetch aborted by user.");
+				setStatus("Operation cancelled.");
 				setLoading(false);
 				return;
 			}
 			setStatus(`Error: ${err.message}`);
+			setLoading(false); // Ensure loading is stopped on any error
 		}
 		// For polling operations, the useEffect hook will set loading to false.
-		if (endpoint !== "filter" && endpoint !== "auth" && endpoint !== "plan") {
+		if (endpoint !== "filter" && endpoint !== "auth" && endpoint !== "plan" && endpoint !== "apply" && endpoint !== "migrate" && endpoint !== "unlock") {
 			setLoading(false);
 		}
 	};
@@ -375,6 +376,36 @@ export default function HomePage() {
 		return () => clearInterval(interval);
 	}, [isPlanPolling]);
 
+	// Poll for apply status
+	useEffect(() => {
+		let interval: NodeJS.Timeout;
+		if (isApplyPolling) {
+			interval = setInterval(async () => {
+				try {
+					const res = await fetch(
+						`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/plan/status`,
+					);
+					const data = await res.json();
+					if (data.status.startsWith("APPLY_COMPLETED::")) {
+						const finalApplyOutput = data.status.substring("APPLY_COMPLETED::".length);
+						setApplyOutput(finalApplyOutput);
+						setStatus("Infrastructure apply completed successfully.");
+						setLoading(false);
+						setIsApplyPolling(false);
+						setViewMode("apply");
+					} else {
+						setStatus(data.status);
+					}
+				} catch (e) {
+					console.error("Polling failed", e);
+					setIsApplyPolling(false); // Stop polling on error
+					setLoading(false);
+				}
+			}, 1000);
+		}
+		return () => clearInterval(interval);
+	}, [isApplyPolling]);
+
 	// Clear session cache when project changes
 	useEffect(() => {
 		setPlanOutput("");
@@ -411,7 +442,7 @@ export default function HomePage() {
 	}, [searchParams]);
 
 	const steps = [
-		{ id: "auth", label: "Authenticate", color: "bg-orange-500" },
+		{ id: "auth", label: "Auth", color: "bg-orange-500" },
 		{ id: "discovered", label: "Discover", color: "bg-blue-500" },
 		{ id: "active", label: "Filter", color: "bg-emerald-500" },
 		{ id: "plan", label: "Plan", color: "bg-purple-500" },
@@ -436,7 +467,7 @@ export default function HomePage() {
 			)}
 
 			<div className="max-w-7xl mx-auto space-y-8">
-				<header className="flex items-center justify-between gap-4">
+				<header className="flex flex-col md:flex-row items-center justify-between gap-4">
 					<div className="flex items-center gap-3">
 						<svg
 							className="w-10 h-10 text-blue-600"
@@ -467,12 +498,12 @@ export default function HomePage() {
 							<h1 className="text-2xl font-extrabold text-slate-800 tracking-tight">
 								GeoShield
 							</h1>
-							<p className="text-sm text-slate-500 font-medium">
+							<p className="text-sm text-slate-500 font-medium whitespace-nowrap">
 								Cloud Landing Zone Provisioner
 							</p>
 						</div>
 					</div>
-					<div className="flex-1 max-w-md">
+					<div className="w-full md:flex-1 md:max-w-md">
 						<input
 							type="text"
 							value={projectID}
@@ -484,7 +515,7 @@ export default function HomePage() {
 				</header>
 
 				<section className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 space-y-6">
-					<div className="flex items-center justify-between">
+					<div className="flex flex-col md:flex-row items-center justify-between gap-4">
 						<div className="flex items-center gap-3 bg-slate-50 text-slate-600 px-5 py-3 rounded-xl shadow-sm border border-slate-100">
 							<svg
 								className={`w-5 h-5 ${loading ? "animate-spin" : ""}`}
@@ -503,7 +534,7 @@ export default function HomePage() {
 								{status || "Ready"}
 							</span>
 						</div>
-						<div className="flex items-center gap-2">
+						<div className="flex items-center gap-2 overflow-x-auto p-2">
 							{steps.map((step, i) => (
 								<div key={step.id} className="flex items-center">
 									<button
@@ -531,7 +562,7 @@ export default function HomePage() {
 									>
 										{i + 1}
 									</button>
-									<span className="text-xs font-bold text-slate-500 ml-2 mr-4">
+									<span className="hidden md:inline text-xs font-bold text-slate-500 ml-2 mr-4 whitespace-nowrap">
 										{step.label}
 									</span>
 									{i < steps.length - 1 && (
@@ -542,7 +573,7 @@ export default function HomePage() {
 						</div>
 					</div>
 
-					<div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+					<div className="grid grid-cols-2 lg:grid-cols-6 gap-4">
 						<button
 							onClick={() => handleAction("auth", "POST")}
 							disabled={loading || isAuthPolling || isFilterPolling}
@@ -602,8 +633,7 @@ export default function HomePage() {
 										strokeLinecap="round"
 										strokeLinejoin="round"
 										strokeWidth="2"
-										d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2a1 1 0 01-.293.707L12 14.414V19a1 1 0 01-1.447.894L7 18.118V14.414L3.293 6.707A1 1 0 013 6V4z"
-									/>
+										d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2a1 1 0 01-.293.707L12 14.414V19a1 1 0 01-1.447.894L7 18.118V14.414L3.293 6.707A1 1 0 013 6V4z" />
 								</svg>
 								FILTER
 							</span>
@@ -630,13 +660,33 @@ export default function HomePage() {
 								VIEW PLAN
 							</span>
 						</button>
+						<button
+							onClick={() => handleAction("migrate", "POST")}
+							disabled={loading || isAuthPolling || isFilterPolling}
+							className="group relative overflow-hidden bg-teal-600 hover:bg-teal-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-teal-200 active:scale-95 disabled:opacity-50"
+						>
+							<span className="relative z-10 flex items-center justify-center gap-2">
+								<svg
+									className="w-5 h-5"
+									fill="none"
+									stroke="currentColor"
+									viewBox="0 0 24 24"
+								>
+									<path
+										strokeLinecap="round"
+										strokeLinejoin="round"
+										d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+								</svg>
+								APP MIGRATION
+							</span>
+						</button>
 						<Link
 							href={projectID ? `/destroy?project=${projectID}` : "#"}
-							className="lg:col-start-5"
+							className="lg:col-start-6 h-full"
 						>
 							<button
 								disabled={loading || isAuthPolling || isFilterPolling || !projectID}
-								className="w-full group relative overflow-hidden bg-gray-600 hover:bg-gray-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-gray-200 active:scale-95 disabled:opacity-50"
+								className="w-full h-full group relative overflow-hidden bg-gray-600 hover:bg-gray-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-gray-200 active:scale-95 disabled:opacity-50"
 							>
 								<span className="relative z-10 flex items-center justify-center gap-2">
 									<svg
@@ -658,11 +708,11 @@ export default function HomePage() {
 						</Link>
 						<Link
 							href={projectID ? `/message?project=${projectID}` : "#"}
-							className="lg:col-start-1"
+							className="lg:col-start-1 h-full"
 						>
 							<button
 								disabled={loading || isAuthPolling || isFilterPolling || !projectID}
-								className="w-full group relative overflow-hidden bg-cyan-600 hover:bg-cyan-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-cyan-200 active:scale-95 disabled:opacity-50"
+								className="w-full h-full group relative overflow-hidden bg-cyan-600 hover:bg-cyan-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-cyan-200 active:scale-95 disabled:opacity-50"
 							>
 								<span className="relative z-10 flex items-center justify-center gap-2">
 									<svg
@@ -784,7 +834,7 @@ export default function HomePage() {
 										Active Resources
 									</h2>
 								</div>
-								<div className="w-full grid grid-cols-1 md:grid-cols-3 gap-x-6 gap-y-4">
+								<div className="w-full grid grid-cols-1 lg:grid-cols-3 gap-x-6 gap-y-4">
 									{/* --- Section 1: Add Resource --- */}
 									<div className="space-y-2">
 										<label className="text-xs font-bold text-slate-500 uppercase tracking-wider ml-1">
@@ -847,7 +897,7 @@ export default function HomePage() {
 										<label className="text-xs font-bold text-slate-500 uppercase tracking-wider ml-1">
 											2. Bulk Set Properties
 										</label>
-										<div className="flex flex-col sm:flex-row gap-2">
+										<div className="flex flex-col md:flex-row gap-2">
 											<select
 												className="bg-white border border-slate-200 text-xs px-3 py-2 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 w-full sm:w-1/2"
 												value={bulkRegion}
@@ -877,7 +927,7 @@ export default function HomePage() {
 
 									{/* --- Section 3: Apply Bulk Actions --- */}
 									<div className="space-y-2 flex flex-col justify-end">
-										<label className="text-xs font-bold text-slate-500 uppercase tracking-wider ml-1 md:invisible">
+										<label className="text-xs font-bold text-slate-500 uppercase tracking-wider ml-1 lg:invisible">
 											3. Apply
 										</label> 
 										<button
@@ -1067,12 +1117,12 @@ export default function HomePage() {
 									</span>
 								</div>
 								<div className="flex items-center gap-2">
-									<button
+									{/* <button
 										onClick={() => setViewMode("active")}
 										className="bg-gray-500 hover:bg-gray-600 text-white px-3 py-1 rounded text-xs font-bold transition-all"
 									>
 										&larr; Back to Edit
-									</button>
+									</button> */}
 									<button
 										onClick={() => handleAction("apply")}
 										disabled={loading}

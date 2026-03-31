@@ -44,6 +44,7 @@ func main() {
 		TerraformModuleVersion: os.Getenv("TERRAFORM_MODULE_VERSION"),
 		ManagedByLabel:         os.Getenv("MANAGED_BY_LABEL"),
 		DefaultRegion:          os.Getenv("DEFAULT_GCP_REGION"),
+		AppMigrationScriptPath: os.Getenv("APP_MIGRATION_SCRIPT_PATH"),
 	}
 
 	// Log authentication source
@@ -83,6 +84,10 @@ func main() {
 
 	// Pub/Sub Streaming
 	r.GET("/api/gcp/stream-pubsub-ws", h.StreamPubSubMessagesWS)
+
+	// Add these two new routes for the migration endpoint
+	r.POST("/api/gcp/migrate", h.AppMigration)
+	r.GET("/api/gcp/migrate/status", h.GetMigrationStatus)
 
 	port := os.Getenv("PORT")
 	if port == "" {
