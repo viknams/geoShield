@@ -891,6 +891,28 @@ func downloadDirectoryFromGCS(ctx context.Context, client *storage.Client, bucke
 	return nil
 }
 
+// deleteGCSFolder deletes all objects within a given GCS prefix (effectively a folder)
+func deleteGCSFolder(ctx context.Context, client *storage.Client, bucketName, gcsPath string) error {
+	it := client.Bucket(bucketName).Objects(ctx, &storage.Query{Prefix: gcsPath})
+	for {
+		attrs, err := it.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("Bucket.Objects: %w", err)
+		}
+		if err := client.Bucket(bucketName).Object(attrs.Name).Delete(ctx); err != nil {
+			return fmt.Errorf("Object(%q).Delete: %w", attrs.Name, err)
+		}
+		log.Printf("Deleted GCS object: gs://%s/%s", bucketName, attrs.Name)
+	}
+	return nil
+}
+
+// executeTerraformPlan is no longer used for streaming, keeping for reference if needed elsewhere.
+// It should be removed if not used.
+// func executeTerraformPlan(config generator.Config, workspaceDir string, isDestroy bool) string {
 func executeTerraformPlan(config generator.Config, workspaceDir string, isDestroy bool) string {
 	var combinedOutput string
 	for i, res := range config.Resources {
@@ -1015,63 +1037,117 @@ func (h *APIHandler) PlanDestroyTerraform(c *gin.Context) {
 		return
 	}
 
-	runID := uuid.New().String()
-	workspaceDir := filepath.Join(h.OutputDir, "run-"+runID)
-	log.Printf("Creating ephemeral workspace for destroy plan: %s", workspaceDir)
+	h.mu.Lock()
+	h.planStatus = "Starting destroy plan process..."
+	h.mu.Unlock()
 
-	config := generator.Config{
-		Cloud:                h.TerraformCloud,
-		OrgName:              h.TerraformOrgName,
-		FolderName:           h.TerraformFolderName,
-		ProjectName:          projectID,
-		PathPattern:          "{{.FolderName}}/{{.Type}}/{{.Name}}",
-		TerraformStateBucket: h.TerraformStateBucket,
-	}
+	go func() {
+		ctx := context.Background()
 
-	ctx := context.Background()
-	client, err := storage.NewClient(ctx)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to create storage client: %v", err)})
-		return
-	}
-	defer client.Close()
-
-	// This loop is identical to DestroyTerraform's setup. It generates placeholder .tf files
-	// so Terraform knows which state to check.
-	for _, rows := range payload.Resources {
-		if len(rows) < 2 {
-			continue
+		runID := uuid.New().String()
+		workspaceDir := filepath.Join(h.OutputDir, "run-"+runID)
+		log.Printf("Creating ephemeral workspace for destroy plan: %s", workspaceDir)
+		if err := os.MkdirAll(workspaceDir, 0755); err != nil {
+			log.Printf("Error creating ephemeral workspace for destroy plan: %v", err)
+			h.planStatus = fmt.Sprintf("Error: Failed to create workspace: %v", err)
+			return
 		}
-		for i := 1; i < len(rows); i++ {
-			destroyRow := rows[i]
-			if len(destroyRow) < 4 { // Now expecting State File Path
+
+		config := generator.Config{
+			Cloud:                h.TerraformCloud,
+			OrgName:              h.TerraformOrgName,
+			FolderName:           h.TerraformFolderName,
+			ProjectName:          projectID,
+			PathPattern:          "{{.FolderName}}/{{.Type}}/{{.Name}}",
+			TerraformStateBucket: h.TerraformStateBucket,
+		}
+
+		client, err := storage.NewClient(ctx)
+		if err != nil {
+			h.planStatus = fmt.Sprintf("Error: failed to create storage client: %v", err)
+			return
+		}
+		defer client.Close()
+
+		// This loop is identical to DestroyTerraform's setup. It generates placeholder .tf files
+		// so Terraform knows which state to check.
+		for _, rows := range payload.Resources {
+			if len(rows) < 2 { // Should have header + at least one data row
 				continue
 			}
-			resName := destroyRow[1]               // Terraform Name
-			serviceType := destroyRow[2]           // Service Type
-			gcsPath := filepath.Dir(destroyRow[3]) // Get the directory from the state file path
+			// The payload for destroy plan should only contain the selected resources.
+			// We iterate through the selected resources to download their original code.
+			header := rows[0]
+			_ = header // Not used directly, but good to acknowledge
+			for _, row := range rows[1:] {
+				if len(row) < 4 {
+					log.Printf("Skipping malformed row for destroy plan: %v", row)
+					continue
+				}
+				resName := row[1]               // Terraform Name
+				resServiceType := row[2]        // Service Type
+				gcsPath := filepath.Dir(row[3]) // Get the directory from the state file path
 
-			localPath := filepath.Join(workspaceDir, gcsPath)
-			log.Printf("Downloading original configuration from gs://%s/%s to %s", h.TerraformStateBucket, gcsPath, localPath)
-			downloadDirectoryFromGCS(ctx, client, h.TerraformStateBucket, gcsPath, localPath)
-			config.Resources = append(config.Resources, generator.Resource{
-				Type: serviceType,
-				Name: resName,
-			})
+				localPath := filepath.Join(workspaceDir, gcsPath)
+				log.Printf("Downloading original configuration for %s from gs://%s/%s to %s", resName, h.TerraformStateBucket, gcsPath, localPath)
+				downloadDirectoryFromGCS(ctx, client, h.TerraformStateBucket, gcsPath, localPath)
+				config.Resources = append(config.Resources, generator.Resource{
+					Type: resServiceType,
+					Name: resName,
+				})
+			}
 		}
-	}
 
-	// We can reuse the plan execution logic, just with a different plan command.
-	combinedOutput := executeTerraformPlan(config, workspaceDir, true) // true for destroy plan
+		var finalPlanOutput string
+		for i, res := range config.Resources {
+			path := filepath.Join(workspaceDir, config.FolderName, res.Type, res.Name)
+			displayType := res.Type
+			if fbData, ok := res.Data.(FallbackData); ok {
+				displayType = fbData.ServiceType
+			}
 
-	c.JSON(http.StatusOK, gin.H{
-		"plan_output": combinedOutput,
-		"workspaceId": runID,
-	})
+			status := fmt.Sprintf("[%d/%d] Initializing Terraform for destroy plan on %s: %s", i+1, len(config.Resources), displayType, res.Name)
+			log.Println(status)
+			h.mu.Lock()
+			h.planStatus = status
+			h.mu.Unlock()
+
+			prefix := filepath.Join(config.FolderName, res.Type, res.Name)
+			initCmd := exec.CommandContext(ctx, "terraform", "init", "-no-color",
+				fmt.Sprintf("-backend-config=bucket=%s", config.TerraformStateBucket),
+				fmt.Sprintf("-backend-config=prefix=%s", prefix),
+			)
+			initCmd.Dir = path
+			if _, err := h.runCommandAndStreamStatus(initCmd, fmt.Sprintf("Init for %s", res.Name)); err != nil {
+				continue
+			}
+
+			planFilePath := filepath.Join(path, "terraform.tfplan")
+			planCmd := exec.CommandContext(ctx, "terraform", "plan", "-no-color", "-destroy", "-out="+planFilePath)
+			planCmd.Dir = path
+			if planOutput, err := h.runCommandAndStreamStatus(planCmd, fmt.Sprintf("Destroy Plan for %s", res.Name)); err != nil {
+				finalPlanOutput += planOutput
+				continue
+			}
+
+			showCmd := exec.CommandContext(ctx, "terraform", "show", "-no-color", planFilePath)
+			showCmd.Dir = path
+			showOutput, _ := showCmd.CombinedOutput()
+			finalPlanOutput += fmt.Sprintf("=== Destroy Plan for %s: %s ===\n%s\n", displayType, res.Name, string(showOutput))
+		}
+
+		log.Printf("Completed destroy planning for %d resources.", len(config.Resources))
+		h.mu.Lock()
+		h.planStatus = fmt.Sprintf("COMPLETED::%s::%s", runID, finalPlanOutput)
+		h.mu.Unlock()
+	}()
+
+	c.JSON(http.StatusOK, gin.H{"status": "Destroy plan process started."})
 }
 
 type DestroyPayload struct {
-	WorkspaceID string `json:"workspaceId"`
+	WorkspaceID string                `json:"workspaceId"`
+	Resources   map[string][][]string `json:"resources"` // Add this to carry selected resources
 }
 
 func (h *APIHandler) DestroyTerraform(c *gin.Context) {
@@ -1086,104 +1162,123 @@ func (h *APIHandler) DestroyTerraform(c *gin.Context) {
 		return
 	}
 
+	if len(payload.Resources) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No resources selected for destruction"})
+		return
+	}
+
+	// Asynchronous execution for streaming updates
 	projectID := c.Query("project")
 	if projectID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "project ID is required"})
 		return
 	}
 
-	ctx := context.Background()
-	client, err := storage.NewClient(ctx)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to create storage client: %v", err)})
-		return
-	}
-	defer client.Close()
-
-	// --- Start: Ephemeral Workspace ---
-	workspaceDir := filepath.Join(h.OutputDir, "run-"+payload.WorkspaceID) // Use the workspace from the plan
-	log.Printf("Creating ephemeral workspace for destroy: %s", workspaceDir)
-	// Defer cleanup to ensure workspace is always removed
-	defer func() {
-		log.Printf("Cleaning up ephemeral workspace for destroy: %s", workspaceDir)
-		os.RemoveAll(workspaceDir)
-	}()
-	// --- End: Ephemeral Workspace ---
-
-	// Since the workspace is already initialized and contains the correct .tf files from the plan-destroy step,
-	// we can iterate through the subdirectories and run `terraform destroy -auto-approve`.
-
-	var combinedOutput string
-
-	// Find all the subdirectories that contain a .tf file, which represent a resource to destroy.
-	resourceDirs := []string{}
-	filepath.Walk(workspaceDir, func(path string, info os.FileInfo, err error) error {
-		if err == nil && !info.IsDir() && strings.HasSuffix(info.Name(), ".tf") {
-			dir := filepath.Dir(path)
-			// Avoid adding duplicates
-			isNew := true
-			for _, d := range resourceDirs {
-				if d == dir {
-					isNew = false
-					break
-				}
-			}
-			if isNew {
-				resourceDirs = append(resourceDirs, dir)
-			}
-		}
-		return nil
-	})
-
-	for i, path := range resourceDirs {
-		log.Printf("[%d/%d] Destroying resources in path: %s", i+1, len(resourceDirs), path)
-
-		// CRITICAL FIX: Run 'terraform init' before destroy to install modules.
-		initCmd := exec.Command("terraform", "init", "-no-color")
-		initCmd.Dir = path
-		if initOutput, err := initCmd.CombinedOutput(); err != nil {
-			log.Printf("-> Terraform init failed during destroy for %s: %v", path, err)
-			combinedOutput += fmt.Sprintf("=== Init Error for %s ===\n%s\n", filepath.Base(path), string(initOutput))
-			continue
-		}
-
-		destroyCmd := exec.Command("terraform", "destroy", "-auto-approve", "-no-color")
-		destroyCmd.Dir = path
-		output, err := destroyCmd.CombinedOutput()
-
-		combinedOutput += fmt.Sprintf("=== Destroy Output for %s ===\n%s\n", filepath.Base(path), string(output))
+	go func() {
+		ctx := context.Background()
+		client, err := storage.NewClient(ctx)
 		if err != nil {
-			log.Printf("-> Terraform destroy failed for %s: %v", path, err)
-		} else {
-			// On successful destroy, clean up the files from GCS.
-			gcsPath, err := filepath.Rel(workspaceDir, path)
+			h.planStatus = fmt.Sprintf("Error: failed to create storage client: %v", err)
+			return
+		}
+		defer client.Close()
+
+		// --- Start: Use Existing Workspace ---
+		workspaceDir := filepath.Join(h.OutputDir, "run-"+payload.WorkspaceID) // Use the workspace from the plan
+		log.Printf("Using existing workspace for destroy: %s", workspaceDir)
+		if _, err := os.Stat(workspaceDir); os.IsNotExist(err) {
+			h.planStatus = "Error: Workspace not found. It may have expired or been deleted. Please generate a new destroy plan."
+			return
+		}
+
+		// Defer cleanup to ensure workspace is always removed
+		defer func() {
+			log.Printf("Cleaning up ephemeral workspace for destroy: %s", workspaceDir)
+			os.RemoveAll(workspaceDir)
+		}()
+		// --- End: Ephemeral Workspace ---
+
+		var combinedOutput string
+		var resourcesToProcess []generator.Resource // To hold the actual resources to destroy
+
+		// Reconstruct config.Resources from payload.Resources
+		for _, rows := range payload.Resources {
+			if len(rows) < 2 {
+				continue
+			}
+			_ = rows[0] // header is not used in this loop
+			for i := 1; i < len(rows); i++ {
+				row := rows[i]
+				// Assuming row[1] is Terraform Name and row[2] is ServiceType
+				resName := row[1]
+				resServiceType := row[2]
+				resourcesToProcess = append(resourcesToProcess, generator.Resource{
+					Type: resServiceType,
+					Name: resName,
+				})
+			}
+		}
+
+		if len(resourcesToProcess) == 0 {
+			combinedOutput = "No resources found in payload for destruction."
+			h.mu.Lock()
+			h.planStatus = fmt.Sprintf("DESTROY_COMPLETED::%s", combinedOutput)
+			h.mu.Unlock()
+			return
+		}
+
+		for i, res := range resourcesToProcess {
+			// Path is now inside the unique workspace for this specific resource
+			path := filepath.Join(workspaceDir, h.TerraformFolderName, res.Type, res.Name)
+
+			displayType := res.Type
+			// No FallbackData needed here, as we are destroying specific resources
+
+			status := fmt.Sprintf("[%d/%d] Initializing Terraform for destroy of %s: %s", i+1, len(resourcesToProcess), displayType, res.Name)
+			log.Println(status)
+			h.mu.Lock()
+			h.planStatus = status
+			h.mu.Unlock()
+
+			// CRITICAL FIX: Run 'terraform init' before destroy to install modules.
+			prefix := filepath.Join(h.TerraformFolderName, res.Type, res.Name)
+			initCmd := exec.CommandContext(ctx, "terraform", "init", "-no-color",
+				fmt.Sprintf("-backend-config=bucket=%s", h.TerraformStateBucket),
+				fmt.Sprintf("-backend-config=prefix=%s", prefix),
+			)
+			initCmd.Dir = path
+			if initOutput, err := h.runCommandAndStreamStatus(initCmd, fmt.Sprintf("Init for destroy of %s", res.Name)); err != nil {
+				log.Printf("-> Terraform init failed during destroy for %s: %v", res.Name, err)
+				combinedOutput += fmt.Sprintf("=== Init Error for %s ===\n%s\n", res.Name, initOutput)
+				continue
+			}
+
+			destroyCmd := exec.CommandContext(ctx, "terraform", "destroy", "-auto-approve", "-no-color")
+			destroyCmd.Dir = path
+			output, err := h.runCommandAndStreamStatus(destroyCmd, fmt.Sprintf("Destroying %s", res.Name))
+
+			combinedOutput += output
 			if err != nil {
-				log.Printf("-> Could not determine GCS path from local path %s: %v", path, err)
-				combinedOutput += fmt.Sprintf("\n--- WARNING: Could not determine GCS path for %s to clean up files. ---\n", filepath.Base(path))
+				log.Printf("-> Terraform destroy failed for %s: %v", res.Name, err)
 			} else {
+				// On successful destroy, clean up the files from GCS.
+				gcsPath := filepath.Join(h.TerraformFolderName, res.Type, res.Name)
 				log.Printf("Cleaning up GCS path: gs://%s/%s", h.TerraformStateBucket, gcsPath)
-				it := client.Bucket(h.TerraformStateBucket).Objects(ctx, &storage.Query{Prefix: gcsPath})
-				for {
-					attrs, err := it.Next()
-					if err == iterator.Done {
-						break
-					}
-					if err != nil {
-						log.Printf("-> Error listing objects for GCS cleanup: %v", err)
-						break
-					}
-					client.Bucket(h.TerraformStateBucket).Object(attrs.Name).Delete(ctx)
+				// Delete the state file and any generated .tf files for this specific resource
+				if deleteErr := deleteGCSFolder(ctx, client, h.TerraformStateBucket, gcsPath); deleteErr != nil {
+					log.Printf("-> Failed to delete GCS folder for %s: %v", res.Name, deleteErr)
+					combinedOutput += fmt.Sprintf("\n--- WARNING: Failed to clean up GCS state for %s ---\n", res.Name)
 				}
 			}
 		}
-	}
 
-	if len(resourceDirs) == 0 {
-		combinedOutput = "No supported resources selected for destroying."
-	}
+		log.Printf("Completed destroying for %d resources.", len(resourcesToProcess))
+		h.mu.Lock()
+		h.planStatus = fmt.Sprintf("DESTROY_COMPLETED::%s", combinedOutput)
+		h.mu.Unlock()
+	}()
 
-	log.Printf("Completed destroying for %d resource directories.", len(resourceDirs))
-	c.JSON(http.StatusOK, gin.H{"apply_output": combinedOutput})
+	c.JSON(http.StatusOK, gin.H{"status": "Destroy process started."})
 }
 
 // WebSocketMessage defines the structure of messages sent over the WebSocket

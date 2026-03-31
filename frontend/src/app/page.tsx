@@ -1117,12 +1117,12 @@ export default function HomePage() {
 									</span>
 								</div>
 								<div className="flex items-center gap-2">
-									{/* <button
+									<button
 										onClick={() => setViewMode("active")}
 										className="bg-gray-500 hover:bg-gray-600 text-white px-3 py-1 rounded text-xs font-bold transition-all"
 									>
 										&larr; Back to Edit
-									</button> */}
+									</button>
 									<button
 										onClick={() => handleAction("apply")}
 										disabled={loading}
