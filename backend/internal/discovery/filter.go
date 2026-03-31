@@ -69,8 +69,10 @@ var HeaderMap = map[string]string{
 	"FullResourcePath": "FullResourcePath",
 }
 
-func (s *FilterService) FilterAndConsolidate(ctx context.Context, dataDir string) error {
+func (s *FilterService) FilterAndConsolidate(ctx context.Context, dataDir string, updateStatus func(string)) error {
 	// 1. Get active resource names from logs in the last 30 days
+	updateStatus("Analyzing usage logs from the last 30 days...")
+	log.Println("Analyzing usage logs from the last 30 days...")
 	activeResources, err := s.getActiveResourcesFromLogs(ctx)
 	if err != nil {
 		log.Printf("[WARNING] Could not fetch logs for usage verification: %v. Falling back to foundation-only filtering.", err)
@@ -79,6 +81,8 @@ func (s *FilterService) FilterAndConsolidate(ctx context.Context, dataDir string
 
 	// 2. Map to hold active resources by type
 	activeByType := make(map[string][]UnifiedResource)
+	updateStatus("Consolidating discovered resources...")
+	log.Println("Consolidating discovered resources...")
 
 	// Create subfolder for active resources
 	activeSubDir := filepath.Join(dataDir, os.Getenv("TERRAFORM_CRITICAL_RESOURCE"))
@@ -94,6 +98,7 @@ func (s *FilterService) FilterAndConsolidate(ctx context.Context, dataDir string
 		}
 
 		serviceType := strings.TrimSuffix(filepath.Base(file), ".csv")
+		updateStatus(fmt.Sprintf("Processing %s...", serviceType))
 		rows, err := readCSVRows(file)
 		if err != nil {
 			log.Printf("Failed to read CSV %s: %v", file, err)
@@ -147,11 +152,14 @@ func (s *FilterService) FilterAndConsolidate(ctx context.Context, dataDir string
 
 	// 3. Write separate CSVs for each active resource type
 	for serviceType, data := range activeByType {
+		updateStatus(fmt.Sprintf("Writing active list for %s...", serviceType))
 		fileName := filepath.Join(activeSubDir, fmt.Sprintf("%s.csv", serviceType))
 		if err := writeActiveCSV(fileName, StandardHeader, data); err != nil {
 			log.Printf("Failed to write active CSV %s: %v", fileName, err)
 		}
 	}
+
+	updateStatus("Filter process completed.")
 
 	return nil
 }

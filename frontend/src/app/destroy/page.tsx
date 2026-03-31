@@ -22,6 +22,7 @@ export default function DestroyPage() {
 	const [expandedSections, setExpandedSections] = useState<
 		Record<string, boolean>
 	>({});
+	const [isPlanPolling, setIsPlanPolling] = useState(false);
 
 	const searchParams = useSearchParams();
 
@@ -59,19 +60,21 @@ export default function DestroyPage() {
 			if (endpoint === "managed-resources") {
 				setManagedResources(data);
 				setStatus("Managed resources loaded successfully.");
-			} else if (endpoint === "plan-destroy") {
-				setPlanOutput(data.plan_output);
-				setWorkspaceId(data.workspaceId);
-				setStatus("Destroy plan generated successfully.");
+			} else if (endpoint === "destroy/plan") {
+				setStatus("Destroy plan process started.");
+				setIsPlanPolling(true);
 			} else if (endpoint === "destroy") {
-				// The backend now returns apply_output for the destroy action
-				setDestroyOutput(data.apply_output);
-				setStatus("Infrastructure destroy completed successfully.");
+				setStatus("Destroy process started.");
+				setIsPlanPolling(true);
 			}
 		} catch (err: any) {
 			setStatus(`Error: ${err.message}`);
+			setLoading(false); // Stop loading on any error, including network errors
 		}
-		setLoading(false);
+		// Only stop loading for non-polling endpoints. Polling handles its own loading state.
+		if (endpoint === "managed-resources") {
+			setLoading(false);
+		}
 	};
 
 	useEffect(() => {
@@ -89,6 +92,54 @@ export default function DestroyPage() {
 		}
 	}, [projectID]);
 
+	// Poll for destroy plan status
+	useEffect(() => {
+		let interval: NodeJS.Timeout;
+		if (isPlanPolling) {
+			interval = setInterval(async () => {
+				try {
+					const res = await fetch(
+						`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/plan/status`,
+					);
+					const data = await res.json();
+
+					if (data.status.startsWith("COMPLETED::") || data.status.startsWith("DESTROY_COMPLETED::")) {
+						const parts = data.status.split("::");
+						const newWorkspaceId = parts[1];
+						const finalPlanOutput = parts[2];
+						setWorkspaceId(newWorkspaceId);
+						setPlanOutput(finalPlanOutput);
+
+						if (data.status.startsWith("DESTROY_COMPLETED::")) {
+							setDestroyOutput(finalPlanOutput); // Store final destroy output
+							setStatus("Infrastructure destroy completed successfully.");
+						} else {
+							setStatus("Destroy plan generated successfully.");
+						}
+						setLoading(false);
+						setIsPlanPolling(false);
+					} else {
+						// Live streaming status
+						setStatus(data.status);
+					}
+				} catch (e) {
+					console.error("Polling failed", e);
+					setIsPlanPolling(false);
+					setLoading(false); // Stop loading if polling fails
+				}
+			}, 1000);
+		}
+		return () => clearInterval(interval);
+	}, [isPlanPolling]);
+
+	// Clear resourcesToDestroy when planOutput is cleared (e.g., "Back to Edit")
+	useEffect(() => {
+		if (!planOutput) {
+			setResourcesToDestroy({});
+		}
+	}, [planOutput]);
+
+	// New view mode for destroy completion
 	if (destroyOutput) {
 		return (
 			<main className="min-h-screen bg-slate-900 text-slate-300 p-4 md:p-8 font-sans">
@@ -136,7 +187,11 @@ export default function DestroyPage() {
 						<div className="flex items-center gap-2">
 							<button
 								onClick={() => setPlanOutput("")}
-								className="bg-gray-500 hover:bg-gray-600 text-white px-3 py-1 rounded text-xs font-bold transition-all"
+								className="bg-gray-500 hover:bg-gray-600 text-white px-3 py-1 rounded text-xs font-bold transition-all disabled:opacity-50"
+								className="bg-gray-500 hover:bg-gray-600 text-white px-3 py-1 rounded text-xs font-bold transition-all disabled:opacity-50" // Added disabled:opacity-50
+								disabled={loading} // Disable while loading
+
+
 							>
 								&larr; Back to Edit
 							</button>
@@ -144,6 +199,7 @@ export default function DestroyPage() {
 								onClick={() =>
 									apiCall("destroy", "POST", {
 										workspaceId: workspaceId,
+										resources: resourcesToDestroy, // Pass selected resources
 									})
 								}
 								disabled={loading}
@@ -218,7 +274,7 @@ export default function DestroyPage() {
 							<span className="text-sm font-bold tracking-wide">{status}</span>
 						</div>
 						<button
-							onClick={() => apiCall("plan-destroy", "POST", { resources: resourcesToDestroy })}
+							onClick={() => apiCall("destroy/plan", "POST", { resources: resourcesToDestroy })}
 							disabled={loading || Object.keys(resourcesToDestroy).length === 0}
 							className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-md text-sm font-bold transition-all disabled:opacity-50 active:scale-95 flex items-center gap-2"
 						>
@@ -304,6 +360,18 @@ export default function DestroyPage() {
 																<input
 																	type="checkbox"
 																	className="h-4 w-4 rounded border-gray-300 text-red-600 focus:ring-red-500"
+																	checked={(() => {
+																		// Check if this specific row is in resourcesToDestroy
+																		const serviceRows = resourcesToDestroy[service];
+																		if (!serviceRows || serviceRows.length <= 1) return false;
+																		// Compare by Terraform Name (row[1])
+																		return serviceRows.slice(1).some(
+																			(selectedRow) =>
+																				selectedRow[1] === row[1],
+																		);
+																	})()}
+
+
 																	onChange={(e) => {
 																		const terraformName = row[1];
 																		setResourcesToDestroy((prev) => {

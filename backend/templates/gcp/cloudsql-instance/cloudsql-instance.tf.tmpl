@@ -1,9 +1,14 @@
+data "google_compute_network" "private_network" {
+  project = var.project_id
+  name    = "{{ .Network }}"
+}
+
 module "db" {
   source           = "github.com/GoogleCloudPlatform/cloud-foundation-fabric//modules/cloudsql-instance?ref={{ .FastRef }}"
   project_id       = var.project_id
-  network          = "{{ .Network }}"
   name             = var.db_name
   region           = var.region
+  network          = data.google_compute_network.private_network.id
   database_version = "{{ .DBVersion }}"
   tier             = "{{ .Tier }}"
 }

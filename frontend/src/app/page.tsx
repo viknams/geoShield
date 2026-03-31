@@ -56,6 +56,9 @@ export default function HomePage() {
 	>("none");
 	const [loading, setLoading] = useState(false);
 	const [isAuthPolling, setIsAuthPolling] = useState(false);
+	const [isFilterPolling, setIsFilterPolling] = useState(false);
+	const [isPlanPolling, setIsPlanPolling] = useState(false);
+	const [isApplyPolling, setIsApplyPolling] = useState(false);
 	const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({});
 
 	const [bulkRegion, setBulkRegion] = useState("");
@@ -64,6 +67,7 @@ export default function HomePage() {
 	const [isAddResourceOpen, setIsAddResourceOpen] = useState(false);
 	const [addResourceSearch, setAddResourceSearch] = useState("");
 	const addResourceRef = useRef<HTMLDivElement>(null);
+	const abortControllerRef = useRef<AbortController | null>(null);
 
 	const toggleSection = (sectionKey: string) => {
 		setExpandedSections((prev) => ({ ...prev, [sectionKey]: !prev[sectionKey] }));
@@ -231,8 +235,12 @@ export default function HomePage() {
 	const apiCall = async (endpoint: string, method: string, bodyData?: any) => {
 		setLoading(true);
 		setStatus(`Executing ${endpoint}...`);
+
+		abortControllerRef.current = new AbortController();
+		const signal = abortControllerRef.current.signal;
+
 		try {
-			const options: RequestInit = { method };
+			const options: RequestInit = { method, signal };
 			if (bodyData) {
 				options.headers = { "Content-Type": "application/json" };
 				options.body = JSON.stringify(bodyData);
@@ -241,36 +249,47 @@ export default function HomePage() {
 				`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/${endpoint}?project=${projectID}`,
 				options,
 			);
+
+			// If the request was aborted, don't process the response.
+			if (signal.aborted) return;
+
 			const data = await res.json();
 			if (data.error) throw new Error(data.error);
 
-			if (endpoint === "plan") {
-				setPlanOutput(data.plan_output);
-				setWorkspaceId(data.workspaceId); // Save the workspace ID
-				setStatus("Infrastructure plan generated successfully.");
-				setViewMode("plan");
-			} else if (endpoint === "apply") {
-				setApplyOutput(data.apply_output);
-				setStatus("Infrastructure apply completed successfully.");
-				setViewMode("apply");
+			if (endpoint === "apply") {
+				setStatus("Apply process started.");
+				setIsApplyPolling(true);
 			} else if (endpoint === "auth") {
 				setStatus(data.status);
+				setViewMode("auth");
 				setIsAuthPolling(true);
 			} else if (endpoint === "discover") {
 				setStatus("Discovery complete. Fetching resources...");
 				await fetchResources();
 				setViewMode("discovered");
 			} else if (endpoint === "filter") {
-				setStatus("Active resources filtered and categorized.");
-				await fetchActiveResources();
-				setViewMode("active");
+				setStatus("Filter process started.");
+				setIsFilterPolling(true);
+			} else if (endpoint === "plan") {
+				setStatus("Plan process started.");
+				setIsPlanPolling(true);
 			} else {
 				setStatus(data.status);
 			}
 		} catch (err: any) {
+			if (err.name === "AbortError") {
+				console.log("Fetch aborted by user.");
+				setStatus("Operation cancelled.");
+				setLoading(false);
+				return;
+			}
 			setStatus(`Error: ${err.message}`);
+			setLoading(false); // Ensure loading is stopped on any error
 		}
-		setLoading(false);
+		// For polling operations, the useEffect hook will set loading to false.
+		if (endpoint !== "filter" && endpoint !== "auth" && endpoint !== "plan" && endpoint !== "apply" && endpoint !== "migrate" && endpoint !== "unlock") {
+			setLoading(false);
+		}
 	};
 
 	// Poll for auth status
@@ -285,6 +304,7 @@ export default function HomePage() {
 					const data = await res.json();
 					setStatus(data.status);
 					if (data.status === "Completed") {
+						setLoading(false);
 						setIsAuthPolling(false);
 						setViewMode("auth");
 					}
@@ -296,6 +316,95 @@ export default function HomePage() {
 		}
 		return () => clearInterval(interval);
 	}, [isAuthPolling]);
+
+	// Poll for filter status
+	useEffect(() => {
+		let interval: NodeJS.Timeout;
+		if (isFilterPolling) {
+			interval = setInterval(async () => {
+				try {
+					const res = await fetch(
+						`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/filter/status`,
+					);
+					const data = await res.json();
+					setStatus(data.status);
+					if (data.status === "Filter process completed.") {
+						setLoading(false);
+						setIsFilterPolling(false);
+						await fetchActiveResources();
+						setViewMode("active");
+					}
+				} catch (e) {
+					console.error("Polling failed", e);
+					setIsFilterPolling(false);
+				}
+			}, 1000);
+		}
+		return () => clearInterval(interval);
+	}, [isFilterPolling]);
+
+	// Poll for plan status
+	useEffect(() => {
+		let interval: NodeJS.Timeout;
+		if (isPlanPolling) {
+			interval = setInterval(async () => {
+				try {
+					const res = await fetch(
+						`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/plan/status`,
+					);
+					const data = await res.json();
+
+					if (data.status.startsWith("COMPLETED::")) {
+						const parts = data.status.split("::");
+						const newWorkspaceId = parts[1];
+						const finalPlanOutput = parts[2];
+						setWorkspaceId(newWorkspaceId);
+						setPlanOutput(finalPlanOutput);
+						setStatus("Infrastructure plan generated successfully.");
+						setLoading(false);
+						setIsPlanPolling(false);
+						setViewMode("plan");
+					} else {
+						setStatus(data.status);
+					}
+				} catch (e) {
+					console.error("Polling failed", e);
+					setIsPlanPolling(false);
+				}
+			}, 1000);
+		}
+		return () => clearInterval(interval);
+	}, [isPlanPolling]);
+
+	// Poll for apply status
+	useEffect(() => {
+		let interval: NodeJS.Timeout;
+		if (isApplyPolling) {
+			interval = setInterval(async () => {
+				try {
+					const res = await fetch(
+						`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/plan/status`,
+					);
+					const data = await res.json();
+					if (data.status.startsWith("APPLY_COMPLETED::")) {
+						const finalApplyOutput = data.status.substring("APPLY_COMPLETED::".length);
+						setApplyOutput(finalApplyOutput);
+						setStatus("Infrastructure apply completed successfully.");
+						setLoading(false);
+						setIsApplyPolling(false);
+						setViewMode("apply");
+					} else {
+						setStatus(data.status);
+					}
+				} catch (e) {
+					console.error("Polling failed", e);
+					setIsApplyPolling(false); // Stop polling on error
+					setLoading(false);
+				}
+			}, 1000);
+		}
+		return () => clearInterval(interval);
+	}, [isApplyPolling]);
 
 	// Clear session cache when project changes
 	useEffect(() => {
@@ -333,7 +442,7 @@ export default function HomePage() {
 	}, [searchParams]);
 
 	const steps = [
-		{ id: "auth", label: "Authenticate", color: "bg-orange-500" },
+		{ id: "auth", label: "Auth", color: "bg-orange-500" },
 		{ id: "discovered", label: "Discover", color: "bg-blue-500" },
 		{ id: "active", label: "Filter", color: "bg-emerald-500" },
 		{ id: "plan", label: "Plan", color: "bg-purple-500" },
@@ -342,8 +451,23 @@ export default function HomePage() {
 
 	return (
 		<main className="min-h-screen bg-gray-50 text-slate-900 p-4 md:p-8 font-sans">
+			{loading && (
+				<div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex flex-col items-center justify-center animate-in fade-in duration-300">
+					<div className="flex items-center gap-3 text-white p-4 rounded-lg">
+						<svg className="w-6 h-6 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h5" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M20 20v-5h-5" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 12a8 8 0 018-8h.5" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M20 12a8 8 0 01-8 8h-.5" /></svg>
+						<span className="text-lg font-bold">{status}</span>
+					</div>
+					<button
+						onClick={() => abortControllerRef.current?.abort()}
+						className="mt-4 bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-bold transition-all"
+					>
+						Cancel
+					</button>
+				</div>
+			)}
+
 			<div className="max-w-7xl mx-auto space-y-8">
-				<header className="flex items-center justify-between gap-4">
+				<header className="flex flex-col md:flex-row items-center justify-between gap-4">
 					<div className="flex items-center gap-3">
 						<svg
 							className="w-10 h-10 text-blue-600"
@@ -374,12 +498,12 @@ export default function HomePage() {
 							<h1 className="text-2xl font-extrabold text-slate-800 tracking-tight">
 								GeoShield
 							</h1>
-							<p className="text-sm text-slate-500 font-medium">
+							<p className="text-sm text-slate-500 font-medium whitespace-nowrap">
 								Cloud Landing Zone Provisioner
 							</p>
 						</div>
 					</div>
-					<div className="flex-1 max-w-md">
+					<div className="w-full md:flex-1 md:max-w-md">
 						<input
 							type="text"
 							value={projectID}
@@ -391,7 +515,7 @@ export default function HomePage() {
 				</header>
 
 				<section className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 space-y-6">
-					<div className="flex items-center justify-between">
+					<div className="flex flex-col md:flex-row items-center justify-between gap-4">
 						<div className="flex items-center gap-3 bg-slate-50 text-slate-600 px-5 py-3 rounded-xl shadow-sm border border-slate-100">
 							<svg
 								className={`w-5 h-5 ${loading ? "animate-spin" : ""}`}
@@ -410,7 +534,7 @@ export default function HomePage() {
 								{status || "Ready"}
 							</span>
 						</div>
-						<div className="flex items-center gap-2">
+						<div className="flex items-center gap-2 overflow-x-auto p-2">
 							{steps.map((step, i) => (
 								<div key={step.id} className="flex items-center">
 									<button
@@ -438,7 +562,7 @@ export default function HomePage() {
 									>
 										{i + 1}
 									</button>
-									<span className="text-xs font-bold text-slate-500 ml-2 mr-4">
+									<span className="hidden md:inline text-xs font-bold text-slate-500 ml-2 mr-4 whitespace-nowrap">
 										{step.label}
 									</span>
 									{i < steps.length - 1 && (
@@ -449,10 +573,10 @@ export default function HomePage() {
 						</div>
 					</div>
 
-					<div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+					<div className="grid grid-cols-2 lg:grid-cols-6 gap-4">
 						<button
-							onClick={() => handleAction("auth")}
-							disabled={loading || isAuthPolling}
+							onClick={() => handleAction("auth", "POST")}
+							disabled={loading || isAuthPolling || isFilterPolling}
 							className="group relative overflow-hidden bg-orange-500 hover:bg-orange-600 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-orange-200 active:scale-95 disabled:opacity-50"
 						>
 							<span className="relative z-10 flex items-center justify-center gap-2">
@@ -465,16 +589,15 @@ export default function HomePage() {
 									<path
 										strokeLinecap="round"
 										strokeLinejoin="round"
-										strokeWidth="2"
-										d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H5v-2H3v-2H1v-4a6 6 0 016-6h4a6 6 0 016 6z"
+										d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"
 									/>
 								</svg>
 								AUTH
 							</span>
 						</button>
 						<button
-							onClick={() => handleAction("discover")}
-							disabled={loading || isAuthPolling}
+							onClick={() => handleAction("discover", "POST")}
+							disabled={loading || isAuthPolling || isFilterPolling}
 							className="group relative overflow-hidden bg-blue-600 hover:bg-blue-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-blue-200 active:scale-95 disabled:opacity-50"
 						>
 							<span className="relative z-10 flex items-center justify-center gap-2">
@@ -495,8 +618,8 @@ export default function HomePage() {
 							</span>
 						</button>
 						<button
-							onClick={() => handleAction("filter")}
-							disabled={loading || isAuthPolling}
+							onClick={() => handleAction("filter", "POST")}
+							disabled={loading || isAuthPolling || isFilterPolling}
 							className="group relative overflow-hidden bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-emerald-200 active:scale-95 disabled:opacity-50"
 						>
 							<span className="relative z-10 flex items-center justify-center gap-2">
@@ -510,15 +633,14 @@ export default function HomePage() {
 										strokeLinecap="round"
 										strokeLinejoin="round"
 										strokeWidth="2"
-										d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2a1 1 0 01-.293.707L12 14.414V19a1 1 0 01-1.447.894L7 18.118V14.414L3.293 6.707A1 1 0 013 6V4z"
-									/>
+										d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2a1 1 0 01-.293.707L12 14.414V19a1 1 0 01-1.447.894L7 18.118V14.414L3.293 6.707A1 1 0 013 6V4z" />
 								</svg>
 								FILTER
 							</span>
 						</button>
 						<button
-							onClick={() => handleAction("plan")}
-							disabled={loading || isAuthPolling}
+							onClick={() => handleAction("plan", "POST")}
+							disabled={loading || isAuthPolling || isFilterPolling}
 							className="group relative overflow-hidden bg-purple-600 hover:bg-purple-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-purple-200 active:scale-95 disabled:opacity-50"
 						>
 							<span className="relative z-10 flex items-center justify-center gap-2">
@@ -538,13 +660,33 @@ export default function HomePage() {
 								VIEW PLAN
 							</span>
 						</button>
+						<button
+							onClick={() => handleAction("migrate", "POST")}
+							disabled={loading || isAuthPolling || isFilterPolling}
+							className="group relative overflow-hidden bg-teal-600 hover:bg-teal-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-teal-200 active:scale-95 disabled:opacity-50"
+						>
+							<span className="relative z-10 flex items-center justify-center gap-2">
+								<svg
+									className="w-5 h-5"
+									fill="none"
+									stroke="currentColor"
+									viewBox="0 0 24 24"
+								>
+									<path
+										strokeLinecap="round"
+										strokeLinejoin="round"
+										d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+								</svg>
+								APP MIGRATION
+							</span>
+						</button>
 						<Link
 							href={projectID ? `/destroy?project=${projectID}` : "#"}
-							className="lg:col-start-5"
+							className="lg:col-start-6 h-full"
 						>
 							<button
-								disabled={loading || isAuthPolling || !projectID}
-								className="w-full group relative overflow-hidden bg-gray-600 hover:bg-gray-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-gray-200 active:scale-95 disabled:opacity-50"
+								disabled={loading || isAuthPolling || isFilterPolling || !projectID}
+								className="w-full h-full group relative overflow-hidden bg-gray-600 hover:bg-gray-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-gray-200 active:scale-95 disabled:opacity-50"
 							>
 								<span className="relative z-10 flex items-center justify-center gap-2">
 									<svg
@@ -561,6 +703,27 @@ export default function HomePage() {
 										/>
 									</svg>
 									DESTROY
+								</span>
+							</button>
+						</Link>
+						<Link
+							href={projectID ? `/message?project=${projectID}` : "#"}
+							className="lg:col-start-1 h-full"
+						>
+							<button
+								disabled={loading || isAuthPolling || isFilterPolling || !projectID}
+								className="w-full h-full group relative overflow-hidden bg-cyan-600 hover:bg-cyan-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-cyan-200 active:scale-95 disabled:opacity-50"
+							>
+								<span className="relative z-10 flex items-center justify-center gap-2">
+									<svg
+										className="w-5 h-5"
+										fill="none"
+										stroke="currentColor"
+										viewBox="0 0 24 24"
+									>
+										<path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+									</svg>
+									MESSAGES
 								</span>
 							</button>
 						</Link>
@@ -671,7 +834,7 @@ export default function HomePage() {
 										Active Resources
 									</h2>
 								</div>
-								<div className="w-full grid grid-cols-1 md:grid-cols-3 gap-x-6 gap-y-4">
+								<div className="w-full grid grid-cols-1 lg:grid-cols-3 gap-x-6 gap-y-4">
 									{/* --- Section 1: Add Resource --- */}
 									<div className="space-y-2">
 										<label className="text-xs font-bold text-slate-500 uppercase tracking-wider ml-1">
@@ -734,7 +897,7 @@ export default function HomePage() {
 										<label className="text-xs font-bold text-slate-500 uppercase tracking-wider ml-1">
 											2. Bulk Set Properties
 										</label>
-										<div className="flex flex-col sm:flex-row gap-2">
+										<div className="flex flex-col md:flex-row gap-2">
 											<select
 												className="bg-white border border-slate-200 text-xs px-3 py-2 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 w-full sm:w-1/2"
 												value={bulkRegion}
@@ -764,7 +927,7 @@ export default function HomePage() {
 
 									{/* --- Section 3: Apply Bulk Actions --- */}
 									<div className="space-y-2 flex flex-col justify-end">
-										<label className="text-xs font-bold text-slate-500 uppercase tracking-wider ml-1 md:invisible">
+										<label className="text-xs font-bold text-slate-500 uppercase tracking-wider ml-1 lg:invisible">
 											3. Apply
 										</label> 
 										<button
