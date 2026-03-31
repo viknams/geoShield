@@ -61,6 +61,6 @@ PUBLIC_IP=$(curl -s ifconfig.me)
 echo "🌍 Access your app at:"
 echo "http://${PUBLIC_IP}:${FRONTEND_PORT}"
  
-echo "=============================="
+echo "==============================="
 echo "🎉 GeoShield Started Successfully!"
-echo "=============================="
+echo "==============================="
