@@ -7,6 +7,8 @@ import Link from "next/link";
 export default function StreamingPage() {
 	const searchParams = useSearchParams();
 	const [projectID, setProjectID] = useState<string>("");
+	const [streamingProjectID, setStreamingProjectID] = useState<string>(""); // For the actual streaming project
+	const [streamingTopicName, setStreamingTopicName] = useState<string>("");
 	const [messages, setMessages] = useState<Array<{ text: string; receivedTime: string; publishTime: string; messageId: string }>>([]);
 	const [newMessage, setNewMessage] = useState("");
 	const ws = useRef<WebSocket | null>(null);
@@ -26,9 +28,13 @@ export default function StreamingPage() {
 	useEffect(() => {
 		if (!projectID) return;
 
+		// Prevent re-connecting if a socket already exists and is not closed
+		if (ws.current && ws.current.readyState !== WebSocket.CLOSED) return;
+
 		// Construct WebSocket URL (ws:// or wss://)
 		const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 		const wsUrl = apiUrl.replace(/^http/, "ws") + `/api/gcp/stream-pubsub-ws?project=${projectID}`;
+		console.log("Connecting to Message Stream WebSocket...");
 
 		const socket = new WebSocket(wsUrl);
 		ws.current = socket;
@@ -39,19 +45,7 @@ export default function StreamingPage() {
 		};
 
 		socket.onmessage = (event) => {
-			let parsedData;
-			try {
-				parsedData = JSON.parse(event.data as string);
-			} catch (e) {
-				console.error("Failed to parse WebSocket message:", e, event.data);
-				// If it's not JSON, it might be an error message from our backend
-				if (typeof event.data === "string" && event.data.startsWith("Error:")) {
-					setError(event.data);
-					setStatus("Connection failed.");
-					socket.close();
-				}
-				return;
-			}
+			const parsedData = JSON.parse(event.data as string);
 
 			if (parsedData.error) { // Handle structured errors from backend
 				setError(parsedData.error);
@@ -60,11 +54,40 @@ export default function StreamingPage() {
 				return;
 			}
 
+			// Handle initial connection message from backend
+			if (parsedData.projectID) {
+				setStreamingProjectID(parsedData.projectID);
+				if (parsedData.topicName) {
+					setStreamingTopicName(parsedData.topicName);
+				}
+				setStatus(parsedData.status || "Connected. Waiting for messages...");
+				return; // This is not a message to display in the list
+			}
+
+			// --- KEY CHANGE: Parse the inner JSON and format the message ---
+			let displayText = parsedData.data; // Fallback to raw data if attributes are missing
+			const attrs = parsedData.attributes;
+
+			if (attrs && attrs.region_id && attrs.current_risk_level) {
+				// Prefer attributes for the summary message
+				const body = JSON.parse(parsedData.data); // Still need body for region_name
+				const regionName = body.region_name || attrs.region_id;
+				const cloudProvider = attrs.cloud_provider || body.cloud_provider;
+
+				displayText = `Risk level for '${regionName}' (${cloudProvider}) changed from ${attrs.previous_risk_level || "N/A"} to ${attrs.current_risk_level}.`;
+			} else {
+				// Fallback to old method if attributes are not present
+				console.warn("Message missing attributes, falling back to body parsing for display.", parsedData);
+				const body = JSON.parse(parsedData.data);
+				displayText = `Risk level for '${body.region_name}' (${body.cloud_provider}/${body.id}) changed from ${body.previous_risk_level} to ${body.current_risk_level}.`;
+			}
+			// --- END KEY CHANGE ---
+
 			const newMsg = {
-				text: parsedData.data,
+				text: displayText,
 				receivedTime: new Date().toLocaleTimeString(), // Time received by frontend
 				publishTime: parsedData.publishTime, // Original publish time from Pub/Sub
-				messageId: parsedData.messageId,
+				messageId: parsedData.messageId.substring(0, 8), // Shorten for display
 			};
 
 			setMessages((prevMessages) => {
@@ -88,7 +111,11 @@ export default function StreamingPage() {
 		};
 
 		return () => {
-			socket.close();
+			// Check if the socket instance exists and is open before closing
+			if (socket && socket.readyState === WebSocket.OPEN) {
+				socket.close();
+				console.log("Cleaned up Message Stream WebSocket.");
+			}
 		};
 	}, [projectID]);
 
@@ -113,8 +140,8 @@ export default function StreamingPage() {
 							Pub/Sub Message Stream
 						</h1>
 						<p className="text-sm text-slate-400 font-medium">
-							Real-time messages from topic `geo-streaming-tp` in project{" "}
-							<span className="font-mono text-blue-400">{projectID}</span>
+							Real-time messages from topic <code className="font-mono text-blue-400">{streamingTopicName || "..."}</code> in project{" "}
+							<code className="font-mono text-blue-400">{streamingProjectID || "loading..."}</code>
 						</p>
 					</div>
 					<Link

@@ -35,12 +35,14 @@ func main() {
 		TerraformStateBucket:      os.Getenv("TERRAFORM_STATE_BUCKET"),
 		TerraformCloud:            os.Getenv("TERRAFORM_CLOUD"),
 		TerraformOrgName:          os.Getenv("TERRAFORM_ORG_NAME"),
+		PubSubServiceAccountJSON:  os.Getenv("PUBSUB_SERVICE_ACCOUNT_JSON"),
 		TerraformFolderName:       os.Getenv("TERRAFORM_FOLDER_NAME"),
 		ResourcePrefix:            os.Getenv("TERRAFORM_RESOURCE_PREFIX"),
 		TerraformCriticalResource: os.Getenv("TERRAFORM_CRITICAL_RESOURCE"),
 		// Add new config values from .env
 		PubSubTopic:            os.Getenv("PUBSUB_STREAMING_TOPIC"),
 		PubSubSubPrefix:        os.Getenv("PUBSUB_SUBSCRIPTION_PREFIX"),
+		PubSubLatestMsgSub:     os.Getenv("PUBSUB_LATEST_MSG_SUB"),
 		TerraformModuleVersion: os.Getenv("TERRAFORM_MODULE_VERSION"),
 		ManagedByLabel:         os.Getenv("MANAGED_BY_LABEL"),
 		DefaultRegion:          os.Getenv("DEFAULT_GCP_REGION"),
@@ -84,6 +86,7 @@ func main() {
 
 	// Pub/Sub Streaming
 	r.GET("/api/gcp/stream-pubsub-ws", h.StreamPubSubMessagesWS)
+	r.GET("/api/gcp/latest-pubsub-message", h.GetLatestPubSubMessage)
 
 	// Add these two new routes for the migration endpoint
 	r.POST("/api/gcp/migrate", h.AppMigration)

@@ -188,7 +188,6 @@ export default function DestroyPage() {
 							<button
 								onClick={() => setPlanOutput("")}
 								className="bg-gray-500 hover:bg-gray-600 text-white px-3 py-1 rounded text-xs font-bold transition-all disabled:opacity-50"
-								className="bg-gray-500 hover:bg-gray-600 text-white px-3 py-1 rounded text-xs font-bold transition-all disabled:opacity-50" // Added disabled:opacity-50
 								disabled={loading} // Disable while loading
 
 

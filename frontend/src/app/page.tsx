@@ -60,6 +60,19 @@ export default function HomePage() {
 	const [isPlanPolling, setIsPlanPolling] = useState(false);
 	const [isApplyPolling, setIsApplyPolling] = useState(false);
 	const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({});
+	// State to store the latest risk message for prominent display
+	const [latestRiskMessage, setLatestRiskMessage] = useState<{
+		regionName: string;
+		cloudProvider: string;
+		id: string; // Cloud provider's region ID, e.g., us-east4
+		previousRiskLevel: string;
+		currentRiskLevel: string;
+		time: string; // Timestamp from the message body
+	} | null>(null);
+	const [isLatestRiskLoading, setIsLatestRiskLoading] = useState(true);
+	const [riskLevels, setRiskLevels] = useState<Record<string, { current: string; previous: string }>>({});
+	const ws = useRef<WebSocket | null>(null);
+
 
 	const [bulkRegion, setBulkRegion] = useState("");
 	const [bulkSubnet, setBulkSubnet] = useState("");
@@ -433,6 +446,23 @@ export default function HomePage() {
 		};
 	}, [addResourceRef]);
 
+	// Helper function to get Tailwind CSS class for risk level
+	const getRiskColorClass = (riskLevel: string) => {
+		switch (riskLevel) {
+			case "R1":
+			case "R2":
+				return "text-green-500";
+			case "R3":
+				return "text-orange-500";
+			case "R4":
+				return "text-red-500";
+			case "R5":
+				return "text-red-800"; // Dark Red
+			default:
+				return "text-slate-500"; // Default color
+		}
+	};
+
 	useEffect(() => {
 		const project = searchParams.get("project");
 		if (project && !projectID) {
@@ -440,6 +470,106 @@ export default function HomePage() {
 		}
 		// We only want this to run once on load when a project is in the URL
 	}, [searchParams]);
+
+	// Fetch the single latest message on page load for instant UI update
+	useEffect(() => {
+		if (!projectID) return;
+
+		setIsLatestRiskLoading(true);
+		const fetchLatestMessage = async () => {
+			try {
+				const res = await fetch(
+					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/latest-pubsub-message?project=${projectID}`
+				);
+				if (!res.ok) return; // Don't worry if it fails, WebSocket will still connect
+
+				const data = await res.json();
+				const attrs = data.attributes;
+				const body = JSON.parse(data.data);
+
+				setLatestRiskMessage({
+					regionName: body.region_name,
+					cloudProvider: body.cloud_provider,
+					id: body.id,
+					previousRiskLevel: attrs.previous_risk_level || "N/A",
+					currentRiskLevel: attrs.current_risk_level,
+					time: body.time,
+				});
+				setIsLatestRiskLoading(false);
+			} catch (e) {
+				console.warn("Could not fetch latest risk message on load:", e);
+				setIsLatestRiskLoading(false);
+			}
+		};
+		fetchLatestMessage();
+	}, [projectID]);
+
+	// WebSocket connection for live risk levels
+	useEffect(() => {
+		if (!projectID) return;
+		// Prevent re-connecting if a socket already exists and is not closed
+		if (ws.current && ws.current.readyState !== WebSocket.CLOSED) return;
+
+		const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+		const wsUrl = apiUrl.replace(/^http/, "ws") + `/api/gcp/stream-pubsub-ws?project=${projectID}`;
+
+		console.log("Connecting to Risk Stream WebSocket...");
+		const socket = new WebSocket(wsUrl);
+		ws.current = socket;
+
+		socket.onmessage = (event) => {
+			const parsedData = JSON.parse(event.data as string);
+
+			// We only care about the actual messages with attributes, not connection status messages
+			if (parsedData.attributes) {
+				const attrs = parsedData.attributes;
+				const body = JSON.parse(parsedData.data);
+
+				// The 'id' in the body seems to be the provider-specific region name (e.g., us-east4)
+				const regionKey = body.id;
+
+				if (regionKey && attrs.current_risk_level) {
+					// Update the state for the latest overall risk message
+					setLatestRiskMessage({
+						regionName: body.region_name,
+						cloudProvider: body.cloud_provider,
+						id: body.id,
+						previousRiskLevel: attrs.previous_risk_level || "N/A",
+						currentRiskLevel: attrs.current_risk_level,
+						time: body.time,
+					});
+					// Update the state for individual risk levels in tables
+					setRiskLevels(prev => ({
+						...prev,
+						[regionKey]: {
+							current: attrs.current_risk_level,
+							previous: attrs.previous_risk_level || "N/A",
+						},
+					}));
+				}
+			}
+		};
+
+		// Note: The `riskLevels` state is keyed by the cloud provider's region ID (e.g., "us-east4").
+		// Ensure that the "Region" column in your resource tables (Discovered/Active) also contains
+		// these cloud provider region IDs for the risk display to function correctly.
+
+		socket.onerror = (err) => {
+			console.error("Risk Stream WebSocket error:", err);
+		};
+
+		socket.onclose = () => {
+			console.log("Risk Stream WebSocket disconnected.");
+		};
+
+		return () => {
+			// Check if the socket instance exists and is open before closing
+			if (socket && socket.readyState === WebSocket.OPEN) {
+				socket.close();
+				console.log("Cleaned up Risk Stream WebSocket.");
+			}
+		};
+	}, [projectID]);
 
 	const steps = [
 		{ id: "auth", label: "Auth", color: "bg-orange-500" },
@@ -513,6 +643,49 @@ export default function HomePage() {
 						/>
 					</div>
 				</header>
+
+				{(latestRiskMessage || isLatestRiskLoading) && (
+					<section className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 animate-in fade-in duration-300">
+						<h2 className="text-lg font-bold text-slate-800 flex items-center gap-2 mb-4">
+							<span className="w-1.5 h-6 bg-red-500 rounded-full" />
+							Latest Global Risk Update
+						</h2>
+						<div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+							<div>
+								<p className="text-slate-500">Region:</p>
+								{isLatestRiskLoading ? <div className="h-5 w-3/4 bg-slate-200 rounded animate-pulse" /> :
+									<p className="font-bold text-slate-700">
+										{latestRiskMessage?.regionName} ({latestRiskMessage?.id})
+									</p>
+								}
+							</div>
+							<div>
+								<p className="text-slate-500">Cloud Provider:</p>
+								{isLatestRiskLoading ? <div className="h-5 w-1/4 bg-slate-200 rounded animate-pulse" /> :
+									<p className="font-bold text-slate-700">{latestRiskMessage?.cloudProvider}</p>
+								}
+							</div>
+							<div>
+								<p className="text-slate-500">Previous Risk Level:</p>
+								{isLatestRiskLoading ? <div className="h-5 w-1/4 bg-slate-200 rounded animate-pulse" /> :
+									<p className={`font-bold ${getRiskColorClass(latestRiskMessage?.previousRiskLevel || "")}`}>{latestRiskMessage?.previousRiskLevel}</p>
+								}
+							</div>
+							<div>
+								<p className="text-slate-500">Current Risk Level:</p>
+								{isLatestRiskLoading ? <div className="h-7 w-1/4 bg-slate-200 rounded animate-pulse" /> :
+									<p className={`font-bold text-xl ${getRiskColorClass(latestRiskMessage?.currentRiskLevel || "")}`}>{latestRiskMessage?.currentRiskLevel}</p>
+								}
+							</div>
+							<div className="md:col-span-2">
+								<p className="text-slate-500">Last Updated:</p>
+								{isLatestRiskLoading ? <div className="h-5 w-1/2 bg-slate-200 rounded animate-pulse" /> :
+									<p className="font-mono text-slate-700">{new Date(latestRiskMessage?.time || "").toLocaleTimeString()}</p>
+								}
+							</div>
+						</div>
+					</section>
+				)}
 
 				<section className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 space-y-6">
 					<div className="flex flex-col md:flex-row items-center justify-between gap-4">
@@ -779,6 +952,7 @@ export default function HomePage() {
 												<table className="w-full text-left text-xs">
 													<thead className="bg-white text-slate-400 border-b border-slate-50">
 														<tr>
+															<th className="px-6 py-4 font-bold uppercase tracking-wider text-red-500">Risk</th>
 															<th className="px-6 py-4"></th>
 															{rows[0]?.map((col, i) => (
 																<th
@@ -796,6 +970,16 @@ export default function HomePage() {
 																key={i}
 																className="hover:bg-blue-50/50 transition-colors"
 															>
+																<td className="px-6 py-4">
+																	{(() => {
+																		const region = row[rows[0]?.indexOf("Region")];
+																		const risk = riskLevels[region];
+																		if (risk) {
+																			return <span className={`font-bold ${getRiskColorClass(risk.current)}`}>{risk.current}</span>;
+																		}
+																		return <span className="text-slate-400">-</span>;
+																	})()}
+																</td>
 																<td className="px-6 py-4">
 																	<button
 																		onClick={() => addActiveResource(service, row)}
@@ -1006,6 +1190,7 @@ export default function HomePage() {
 												<table className="w-full text-left text-xs">
 													<thead className="bg-white text-slate-400 border-b border-slate-50">
 														<tr>
+															<th className="px-6 py-4 font-bold uppercase tracking-wider text-red-500">Risk</th>
 															{rows[0]?.map((col, i) => {
 																const isEditable =
 																	col === "NewRegion" || col === "NewSubnet";
@@ -1027,6 +1212,17 @@ export default function HomePage() {
 																key={i}
 																className="hover:bg-emerald-50/50 transition-colors"
 															>
+																<td className="px-6 py-4">
+																	{(() => {
+																		const region = row[rows[0]?.indexOf("Region")];
+																		const risk = riskLevels[region];
+																		if (risk) {
+																			return <span className={`font-bold ${getRiskColorClass(risk.current)}`}>{risk.current} &larr; <span className={getRiskColorClass(risk.previous)}>{risk.previous}</span></span>;
+																		}
+																		return <span className="text-slate-400">-</span>;
+																	})()}
+																</td>
+
 																{row.map((cell, j) => {
 																	const header = rows[0][j];
 																	const isEditable =
