@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"cloud.google.com/go/pubsub"
@@ -56,9 +57,14 @@ type APIHandler struct {
 	// Track auth status
 	mu              sync.RWMutex
 	authStatus      string
+	discoveryStatus string
 	filterStatus    string
 	planStatus      string
 	migrationStatus string
+
+	// For Cancellation
+	runningCmdLock sync.Mutex
+	runningCmd     *exec.Cmd
 }
 
 func (h *APIHandler) AuthGCP(c *gin.Context) {
@@ -123,6 +129,12 @@ func (h *APIHandler) GetAuthStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": h.authStatus})
 }
 
+func (h *APIHandler) GetDiscoveryStatus(c *gin.Context) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	c.JSON(http.StatusOK, gin.H{"status": h.discoveryStatus})
+}
+
 func (h *APIHandler) GetFilterStatus(c *gin.Context) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -141,6 +153,40 @@ func (h *APIHandler) GetMigrationStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": h.migrationStatus})
 }
 
+func (h *APIHandler) CancelOperation(c *gin.Context) {
+	h.runningCmdLock.Lock()
+	defer h.runningCmdLock.Unlock()
+
+	if h.runningCmd != nil && h.runningCmd.Process != nil {
+		// Kill the entire process group by sending a signal to -PGID.
+		// This is crucial to ensure that child processes (like terraform) are also terminated.
+		if err := syscall.Kill(-h.runningCmd.Process.Pid, syscall.SIGKILL); err != nil {
+			log.Printf("Failed to kill process group with PGID %d: %v. Attempting to kill single process.", h.runningCmd.Process.Pid, err)
+			// Fallback to killing just the single process if killing the group fails.
+			if err := h.runningCmd.Process.Kill(); err != nil {
+				log.Printf("Fallback kill failed for PID %d: %v", h.runningCmd.Process.Pid, err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to kill running process", "details": err.Error()})
+				return
+			}
+		}
+
+		log.Printf("Successfully sent kill signal to process group %d.", h.runningCmd.Process.Pid)
+
+		// Clear the command to prevent multiple kill attempts
+		h.runningCmd = nil
+
+		// Update the status that the frontend polls to give immediate feedback
+		h.mu.Lock()
+		h.planStatus = "Operation cancelled by user."
+		h.mu.Unlock()
+
+		c.JSON(http.StatusOK, gin.H{"status": "Cancellation signal sent successfully."})
+	} else {
+		c.JSON(http.StatusNotFound, gin.H{"error": "No cancellable operation was found to be running."})
+	}
+}
+
+
 func (h *APIHandler) DiscoverGCP(c *gin.Context) {
 	projectID := c.Query("project")
 	if projectID == "" {
@@ -153,22 +199,36 @@ func (h *APIHandler) DiscoverGCP(c *gin.Context) {
 		impersonate = h.ImpersonateEmail
 	}
 
-	ctx := context.Background()
-	svc, err := discovery.NewDiscoveryService(ctx, projectID, impersonate, h.ServiceAccountJSON)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to init discovery: %v", err)})
-		return
-	}
+	h.mu.Lock()
+	h.discoveryStatus = "Starting discovery process..."
+	h.mu.Unlock()
 
-	// Construct the correct, project-specific path for discovery output
-	projectDataDir := strings.Replace(h.DataDir, "GCP_PROJECT", projectID, 1)
-	log.Printf("DiscoverGCP: Using data directory: %s", projectDataDir)
-	if err := svc.Discover(ctx, projectDataDir); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("discovery failed: %v", err)})
-		return
-	}
+	go func() {
+		ctx := context.Background()
+		svc, err := discovery.NewDiscoveryService(ctx, projectID, impersonate, h.ServiceAccountJSON)
+		if err != nil {
+			h.mu.Lock()
+			h.discoveryStatus = fmt.Sprintf("Failed to init discovery: %v", err)
+			h.mu.Unlock()
+			return
+		}
 
-	c.JSON(http.StatusOK, gin.H{"status": "Discovery completed. CSV files updated."})
+		// Construct the correct, project-specific path for discovery output
+		projectDataDir := strings.Replace(h.DataDir, "GCP_PROJECT", projectID, 1)
+		log.Printf("DiscoverGCP: Using data directory: %s", projectDataDir)
+		if err := svc.Discover(ctx, projectDataDir); err != nil {
+			h.mu.Lock()
+			h.discoveryStatus = fmt.Sprintf("Discovery failed: %v", err)
+			h.mu.Unlock()
+			return
+		}
+
+		h.mu.Lock()
+		h.discoveryStatus = "Discovery completed. CSV files updated."
+		h.mu.Unlock()
+	}()
+
+	c.JSON(http.StatusOK, gin.H{"status": "Discovery process started."})
 }
 
 func (h *APIHandler) ListResources(c *gin.Context) {
@@ -776,6 +836,22 @@ func (h *APIHandler) ApplyTerraform(c *gin.Context) {
 // runCommandAndStreamStatus executes a command, streams its stdout/stderr to the planStatus,
 // and returns the combined output as a string.
 func (h *APIHandler) runCommandAndStreamStatus(cmd *exec.Cmd, header string) (string, error) {
+	// --- Cancellation Setup ---
+	// This makes the command the leader of a new process group.
+	// We can kill the entire group later, ensuring no child processes are left behind.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	h.runningCmdLock.Lock()
+	h.runningCmd = cmd
+	h.runningCmdLock.Unlock()
+
+	// Always clear the running command when this function returns.
+	defer func() {
+		h.runningCmdLock.Lock()
+		h.runningCmd = nil
+		h.runningCmdLock.Unlock()
+	}()
+	// --- End Cancellation Setup ---
+
 	var outputBuf bytes.Buffer
 
 	stdout, err := cmd.StdoutPipe()

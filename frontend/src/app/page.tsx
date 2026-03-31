@@ -231,30 +231,23 @@ function HomePageClient() {
 		setBulkSubnet("");
 	};
 
-	const apiCall = async (endpoint: string, method: string, bodyData?: any) => {
-		setLoading(true);
-		setStatus(`Executing ${endpoint}...`);
-
-		abortControllerRef.current = new AbortController();
-		const signal = abortControllerRef.current.signal;
-
+	const apiCall = async (endpoint: string, method: string, bodyData?: any, signal?: AbortSignal) => {
 		try {
 			const options: RequestInit = { method, signal };
 			if (bodyData) {
 				options.headers = { "Content-Type": "application/json" };
 				options.body = JSON.stringify(bodyData);
 			}
+
 			const res = await fetch(
 				`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/${endpoint}?project=${projectID}`,
 				options,
 			);
 
-			if (signal.aborted) return;
-
 			const data = await res.json();
 			if (data.error) throw new Error(data.error);
 
-			setStatus(data.status || `Task ${endpoint} started.`);
+			return data;
 
 		} catch (err: any) {
 			if (err.name === "AbortError") {
@@ -263,10 +256,7 @@ function HomePageClient() {
 			} else {
 				setStatus(`Error: ${err.message}`);
 			}
-			setLoading(false);
 			throw err; // Re-throw to be caught by automation engine
-		} finally {
-			// Don't set loading to false here for long-running tasks
 		}
 	};
 
@@ -316,11 +306,27 @@ function HomePageClient() {
 	};
 
 	const pollStatus = (statusUrl: string, completionPrefix: string, timeout: number) => {
-		return new Promise<void>((resolve, reject) => {
+		return new Promise<string>((resolve, reject) => {
 			const startTime = Date.now();
+			const signal = abortControllerRef.current?.signal;
 			let intervalId: NodeJS.Timeout;
 
 			const checkStatus = async () => {
+				// Check if the signal exists and is aborted
+				if (signal && signal.aborted) {
+					clearInterval(intervalId);
+					reject(new Error("Operation cancelled by user."));
+					return;
+				}
+
+				// Ensure abortControllerRef.current is still the one associated with this poll
+				// This helps prevent issues if a new operation starts while this one is still polling
+				if (abortControllerRef.current?.signal !== signal) {
+					clearInterval(intervalId);
+					reject(new Error("Polling superseded by new operation."));
+					return; // Stop this old poll
+				}
+
 				if (Date.now() - startTime > timeout) {
 					clearInterval(intervalId);
 					reject(new Error(`Polling timed out after ${timeout / 1000}s`));
@@ -334,15 +340,8 @@ function HomePageClient() {
 
 					if (data.status.startsWith(completionPrefix)) {
 						clearInterval(intervalId);
-						if (completionPrefix === "COMPLETED::") {
-							const parts = data.status.split("::");
-							setWorkspaceId(parts[1]);
-							setPlanOutput(parts[2]);
-						} else if (completionPrefix === "APPLY_COMPLETED::") {
-							const finalApplyOutput = data.status.substring("APPLY_COMPLETED::".length);
-							setApplyOutput(finalApplyOutput);
-						}
-						resolve();
+						// Resolve with the final status so the caller can use it
+						resolve(data.status);
 					}
 				} catch (e) {
 					console.error("Polling check failed:", e);
@@ -360,6 +359,7 @@ function HomePageClient() {
 		if (!projectID || isAutomationRunning) return;
 		setIsAutomationRunning(true);
 		setLoading(true);
+		abortControllerRef.current = new AbortController(); // New controller for automation
 		setStatus(`Automation started for Risk Level ${riskLevel}`);
 
 		try {
@@ -367,11 +367,20 @@ function HomePageClient() {
 			if (riskLevel >= "R1") {
 				setStatus("Step 1: Authenticating...");
 				await apiCall("auth", "POST");
-				await pollStatus(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/auth/status`, "Completed", 45 * 1000);
+				await pollStatus(
+					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/auth/status`,
+					"Completed",
+					45 * 1000,
+				);
 				setViewMode("auth");
 
 				setStatus("Step 2: Discovering resources...");
 				await apiCall("discover", "POST");
+				await pollStatus(
+					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/discover/status`,
+					"Discovery completed",
+					5 * 60 * 1000, // 5 minute timeout for discovery
+				);
 				await fetchResources();
 				setViewMode("discovered");
 			}
@@ -380,13 +389,23 @@ function HomePageClient() {
 			if (riskLevel >= "R2") {
 				setStatus("Step 3: Filtering critical resources...");
 				await apiCall("filter", "POST");
-				await pollStatus(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/filter/status`, "Filter process completed.", 60 * 1000);
+				await pollStatus(
+					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/filter/status`,
+					"Filter process completed.",
+					60 * 1000,
+				);
 				await fetchActiveResources();
 				setViewMode("active");
 
 				setStatus("Step 4: Generating Terraform plan...");
-				await apiCall("plan", "POST", { resources: activeResources, workspaceId: "" });
-				await pollStatus(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/plan/status`, "COMPLETED::", 5 * 60 * 1000);
+				const planStatus = await pollStatus(
+					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/plan/status`,
+					"COMPLETED::",
+					5 * 60 * 1000,
+				);
+				const parts = planStatus.split("::");
+				setWorkspaceId(parts[1]);
+				setPlanOutput(parts[2]);
 				setViewMode("plan");
 			}
 
@@ -394,7 +413,13 @@ function HomePageClient() {
 			if (riskLevel >= "R3") {
 				setStatus("Step 5: Applying Terraform plan...");
 				await apiCall("apply", "POST", { resources: activeResources, workspaceId: workspaceId });
-				await pollStatus(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/plan/status`, "APPLY_COMPLETED::", 15 * 60 * 1000);
+				const applyStatus = await pollStatus(
+					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/plan/status`, // Still polls plan status
+					"APPLY_COMPLETED::",
+					15 * 60 * 1000,
+				);
+				const finalApplyOutput = applyStatus.substring("APPLY_COMPLETED::".length);
+				setApplyOutput(finalApplyOutput);
 				setViewMode("apply");
 			}
 
@@ -402,7 +427,11 @@ function HomePageClient() {
 			if (riskLevel >= "R4") {
 				setStatus("Step 6: Starting application migration...");
 				await apiCall("migrate", "POST");
-				await pollStatus(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/migrate/status`, "Completed", 2 * 60 * 60 * 1000);
+				await pollStatus(
+					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/migrate/status`,
+					"Completed",
+					2 * 60 * 60 * 1000,
+				);
 			}
 			setStatus(`Automation completed for Risk Level ${riskLevel}.`);
 		} catch (error: any) {
@@ -410,6 +439,73 @@ function HomePageClient() {
 		} finally {
 			setIsAutomationRunning(false);
 			setLoading(false);
+		}
+	};
+
+	// Generic handler for manual button clicks
+	const handleManualAction = async (endpoint: string, method: string, bodyData?: any, poll: boolean = false, completionPrefix: string = "", timeout: number = 0) => {
+		setLoading(true);
+		abortControllerRef.current = new AbortController();
+		setStatus(`Executing ${endpoint}...`);
+		try {
+			// Step 1: Make the initial API call
+			await apiCall(endpoint, method, bodyData, abortControllerRef.current.signal);
+
+			// Step 2: Poll for completion if required
+			let finalStatus = "";
+			if (poll) {
+				finalStatus = await pollStatus(
+					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/${endpoint}/status`,
+					completionPrefix,
+					timeout,
+				);
+			}
+
+			// Step 3: Perform actions after completion
+			if (endpoint === 'discover') {
+				setStatus("Fetching discovered resources...");
+				await fetchResources();
+				setViewMode('discovered');
+			} else if (endpoint === 'filter') {
+				setStatus("Fetching active resources...");
+				await fetchActiveResources();
+				setViewMode('active');
+			} else if (endpoint === 'plan') {
+				const parts = finalStatus.split("::");
+				setWorkspaceId(parts[1]);
+				setPlanOutput(parts[2]);
+				setViewMode('plan');
+			} else if (endpoint === 'apply') {
+				const finalApplyOutput = finalStatus.substring(completionPrefix.length);
+				setApplyOutput(finalApplyOutput);
+				setViewMode('apply');
+			}
+
+		} catch (error) {
+			// Error logging is handled in apiCall and pollStatus, this just catches to prevent crash
+			console.error(`Manual action ${endpoint} failed:`, error);
+		} finally {
+			// Ensure loader is always turned off
+			setLoading(false);
+		}
+	};
+
+	const handleCancel = async () => {
+		setStatus("Cancelling operation...");
+		try {
+			// Send a request to the backend to terminate the running process.
+			await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/cancel`, {
+				method: 'POST',
+			});
+			// The backend will kill the process, and the polling on the frontend
+			// will eventually fail or see a "cancelled" status.
+		} catch (e) {
+			console.error("Failed to send cancel request to backend", e);
+		} finally {
+			// Abort the frontend controller to stop any ongoing fetch/poll attempts immediately.
+			abortControllerRef.current?.abort();
+			setLoading(false);
+			setIsAutomationRunning(false);
 		}
 	};
 
@@ -538,7 +634,7 @@ function HomePageClient() {
 						<span className="text-lg font-bold">{status}</span>
 					</div>
 					<button
-						onClick={() => abortControllerRef.current?.abort()}
+						onClick={handleCancel}
 						className="mt-4 bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-bold transition-all"
 					>
 						Cancel
@@ -708,7 +804,7 @@ function HomePageClient() {
 
 					<div className="grid grid-cols-2 lg:grid-cols-6 gap-4">
 						<button
-							onClick={() => apiCall("auth", "POST")}
+							onClick={() => handleManualAction("auth", "POST", undefined, true, "Completed", 45 * 1000)}
 							disabled={loading || isAutomationRunning}
 							className="group relative overflow-hidden bg-orange-500 hover:bg-orange-600 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-orange-200 active:scale-95 disabled:opacity-50"
 						>
@@ -729,7 +825,7 @@ function HomePageClient() {
 							</span>
 						</button>
 						<button
-							onClick={() => apiCall("discover", "POST")}
+							onClick={() => handleManualAction("discover", "POST", undefined, true, "Discovery completed. CSV files updated.", 5 * 60 * 1000)}
 							disabled={loading || isAutomationRunning}
 							className="group relative overflow-hidden bg-blue-600 hover:bg-blue-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-blue-200 active:scale-95 disabled:opacity-50"
 						>
@@ -751,7 +847,7 @@ function HomePageClient() {
 							</span>
 						</button>
 						<button
-							onClick={() => apiCall("filter", "POST")}
+							onClick={() => handleManualAction("filter", "POST", undefined, true, "Filter process completed.", 60 * 1000)}
 							disabled={loading || isAutomationRunning}
 							className="group relative overflow-hidden bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-emerald-200 active:scale-95 disabled:opacity-50"
 						>
@@ -772,7 +868,7 @@ function HomePageClient() {
 							</span>
 						</button>
 						<button
-							onClick={() => apiCall("plan", "POST", { resources: activeResources, workspaceId: "" })}
+							onClick={() => handleManualAction("plan", "POST", { resources: activeResources, workspaceId: "" }, true, "COMPLETED::", 5 * 60 * 1000)}
 							disabled={loading || isAutomationRunning}
 							className="group relative overflow-hidden bg-purple-600 hover:bg-purple-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-purple-200 active:scale-95 disabled:opacity-50"
 						>
@@ -794,7 +890,7 @@ function HomePageClient() {
 							</span>
 						</button>
 						<button
-							onClick={() => apiCall("migrate", "POST")}
+							onClick={() => handleManualAction("migrate", "POST", undefined, true, "Completed", 2 * 60 * 60 * 1000)}
 							disabled={loading || isAutomationRunning}
 							className="group relative overflow-hidden bg-teal-600 hover:bg-teal-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-teal-200 active:scale-95 disabled:opacity-50"
 						>
@@ -1280,7 +1376,7 @@ function HomePageClient() {
 										&larr; Back to Edit
 									</button>
 									<button
-										onClick={() => apiCall("apply", "POST", { resources: activeResources, workspaceId: workspaceId })}
+										onClick={() => handleManualAction("apply", "POST", { resources: activeResources, workspaceId: workspaceId }, true, "APPLY_COMPLETED::", 15 * 60 * 1000)}
 										disabled={loading}
 										className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-md text-sm font-bold transition-all disabled:opacity-50 active:scale-95 flex items-center gap-2"
 									>

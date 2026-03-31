@@ -69,6 +69,7 @@ func main() {
 
 	// Discovery and Filtering
 	r.POST("/api/gcp/discover", h.DiscoverGCP)
+	r.GET("/api/gcp/discover/status", h.GetDiscoveryStatus)
 	r.GET("/api/gcp/resources", h.ListResources)
 	r.GET("/api/gcp/resources/active", h.ListActiveResources)
 	r.GET("/api/gcp/filter/status", h.GetFilterStatus)
@@ -78,6 +79,7 @@ func main() {
 	r.GET("/api/gcp/plan/status", h.GetPlanStatus)
 	r.POST("/api/gcp/plan", h.PlanTerraform)
 	r.POST("/api/gcp/apply", h.ApplyTerraform)
+	r.POST("/api/gcp/cancel", h.CancelOperation) // Add the new cancel route
 
 	// Terraform Destroy
 	r.GET("/api/gcp/managed-resources", h.ListManagedResources) // Renamed from /plan-destroy in some versions
