@@ -53,6 +53,16 @@ type APIHandler struct {
 	ManagedByLabel         string
 	DefaultRegion          string
 	AppMigrationScriptPath string
+	// New configurable defaults for resource mapping
+	DefaultVMNetwork        string
+	DefaultVMSubnetwork     string
+	DefaultVMMachineType    string
+	DefaultVMImage          string
+	DefaultBucketLocation   string
+	DefaultBucketVersioning bool
+	DefaultSQLDBVersion     string
+	DefaultSQLTier          string
+	DefaultSQLNetwork       string
 
 	// Track auth status
 	mu              sync.RWMutex
@@ -554,13 +564,17 @@ func (h *APIHandler) mapFromUnifiedResource(serviceType string, header []string,
 
 	region := m["NewRegion"]
 	if region == "" {
-		region = h.DefaultRegion
-	}
-	if region == "" {
 		region = m["Region"]
 	}
+	if region == "" {
+		region = h.DefaultRegion
+	}
 	if region == "" || region == "global" {
-		region = "us-east1" // default placeholder
+		region = "asia-south1" // default placeholder
+	}
+	// Fallback for default region if not set in .env or resource
+	if region == "" {
+		region = "asia-south1" // A more generic default if all else fails
 	}
 
 	newSubnet := m["NewSubnet"]
@@ -575,6 +589,45 @@ func (h *APIHandler) mapFromUnifiedResource(serviceType string, header []string,
 	fastRef := h.TerraformModuleVersion
 	if fastRef == "" {
 		fastRef = "v20.0.0" // Fallback version
+	}
+
+	// Default values for VM
+	vmNetwork := h.DefaultVMNetwork
+	if vmNetwork == "" {
+		vmNetwork = "default"
+	}
+	vmSubnetwork := h.DefaultVMSubnetwork
+	if vmSubnetwork == "" {
+		vmSubnetwork = "default"
+	}
+	vmMachineType := h.DefaultVMMachineType
+	if vmMachineType == "" {
+		vmMachineType = "e2-medium"
+	}
+	vmImage := h.DefaultVMImage
+	if vmImage == "" {
+		vmImage = "debian-cloud/debian-11"
+	}
+
+	// Default values for GCS Bucket
+	bucketLocation := h.DefaultBucketLocation
+	if bucketLocation == "" {
+		bucketLocation = "US"
+	}
+	bucketVersioning := h.DefaultBucketVersioning
+
+	// Default values for Cloud SQL
+	sqlDBVersion := h.DefaultSQLDBVersion
+	if sqlDBVersion == "" {
+		sqlDBVersion = "POSTGRES_18"
+	}
+	sqlTier := h.DefaultSQLTier
+	if sqlTier == "" {
+		sqlTier = "db-f1-micro"
+	}
+	sqlNetwork := h.DefaultSQLNetwork
+	if sqlNetwork == "" {
+		sqlNetwork = "default"
 	}
 
 	switch serviceType {
@@ -596,18 +649,23 @@ func (h *APIHandler) mapFromUnifiedResource(serviceType string, header []string,
 			subnets = []Subnet{{Name: newResName + "-sub", Region: region, CIDR: cidr}}
 		}
 		return "vpc", VPCData{projectID, newResName, region, fastRef, subnets}, newResName
-	case "compute.Instance":
-		zone := region + "-a"
-		if m["NewRegion"] != "" {
-			zone = region + "-a"
+	case "compute.Instance": // Use configurable VM defaults
+		var zone string
+		// If the region already looks like a zone (e.g., "us-central1-c"), use it directly.
+		// Otherwise, append the default zone suffix.
+		if len(region) > 2 && (strings.HasSuffix(region, "-a") || strings.HasSuffix(region, "-b") || strings.HasSuffix(region, "-c") || strings.HasSuffix(region, "-d")) {
+			zone = region
+		} else {
+			zone = region + "-b" // Default to zone 'b'
 		}
-		return "compute-vm", VMData{projectID, region, newResName, zone, "default", "default", "e2-medium", "debian-cloud/debian-11", labels, fastRef}, newResName
-	case "storage.Bucket":
-		return "gcs", GCSData{projectID, region, newResName, "US", labels, true, fastRef}, newResName
+		return "compute-vm", VMData{projectID, region, newResName, zone, vmNetwork, vmSubnetwork, vmMachineType, vmImage, labels, fastRef}, newResName
+
+	case "storage.Bucket": // Use configurable GCS defaults
+		return "gcs", GCSData{projectID, region, newResName, bucketLocation, labels, bucketVersioning, fastRef}, newResName
 	case "container.Cluster":
 		return "gke-cluster", GKEData{projectID, region, newResName, "default", "default", labels, fastRef}, newResName
 	case "sqladmin.Instance":
-		return "cloudsql-instance", SQLData{projectID, region, newResName, "default", "POSTGRES_18", "db-f1-micro", labels, fastRef}, newResName
+		return "cloudsql-instance", SQLData{projectID, region, newResName, sqlNetwork, sqlDBVersion, sqlTier, labels, fastRef}, newResName
 	case "compute.ForwardingRule":
 		return "net-lb-app-ext", LBData{projectID, region, newResName, fastRef, labels}, newResName
 	default:

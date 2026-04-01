@@ -47,6 +47,16 @@ func main() {
 		ManagedByLabel:         os.Getenv("MANAGED_BY_LABEL"),
 		DefaultRegion:          os.Getenv("DEFAULT_GCP_REGION"),
 		AppMigrationScriptPath: os.Getenv("APP_MIGRATION_SCRIPT_PATH"),
+		// Populate new configurable defaults
+		DefaultVMNetwork:        os.Getenv("DEFAULT_VM_NETWORK"),
+		DefaultVMSubnetwork:     os.Getenv("DEFAULT_VM_SUBNETWORK"),
+		DefaultVMMachineType:    os.Getenv("DEFAULT_VM_MACHINE_TYPE"),
+		DefaultVMImage:          os.Getenv("DEFAULT_VM_IMAGE"),
+		DefaultBucketLocation:   os.Getenv("DEFAULT_BUCKET_LOCATION"),
+		DefaultBucketVersioning: os.Getenv("DEFAULT_BUCKET_VERSIONING") == "true", // Parse as boolean
+		DefaultSQLDBVersion:     os.Getenv("DEFAULT_SQL_DB_VERSION"),
+		DefaultSQLTier:          os.Getenv("DEFAULT_SQL_TIER"),
+		DefaultSQLNetwork:       os.Getenv("DEFAULT_SQL_NETWORK"),
 	}
 
 	// Log authentication source

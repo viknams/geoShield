@@ -69,7 +69,9 @@ function HomePageClient() {
 	>("none");
 	const [loading, setLoading] = useState(false);
 	const [isAutomationRunning, setIsAutomationRunning] = useState(false);
-	const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({});
+	const [expandedSections, setExpandedSections] = useState<
+		Record<string, boolean>
+	>({});
 	// State to store the latest risk message for prominent display
 	const [latestRiskMessage, setLatestRiskMessage] = useState<{
 		regionName: string;
@@ -78,10 +80,18 @@ function HomePageClient() {
 		previousRiskLevel: string;
 		currentRiskLevel: string;
 		time: string; // Timestamp from the message body
-	} | null>(null);
+	} | null>({
+		regionName: "Global",
+		cloudProvider: "gcp",
+		id: "global",
+		previousRiskLevel: "N/A",
+		currentRiskLevel: "R0", // Start at R0 by default
+		time: new Date().toISOString(),
+	});
 	const [isLatestRiskLoading, setIsLatestRiskLoading] = useState(false);
 	const [riskLevels, setRiskLevels] = useState<Record<string, { current: string; previous: string }>>({});
 	const { connect, latestMessage: webSocketLatestMessage } = useWebSocket();
+	const [hasMounted, setHasMounted] = useState(false);
 
 
 	const [bulkRegion, setBulkRegion] = useState("");
@@ -220,6 +230,13 @@ function HomePageClient() {
 		colIndex: number,
 		value: string,
 	) => {
+		const currentServiceRows = activeResources[serviceKey];
+		if (!currentServiceRows || rowIndex >= currentServiceRows.length || !currentServiceRows[rowIndex]) {
+			console.warn("Attempted to update non-existent resource or index out of bounds.");
+			return;
+		}
+		const resourceToIdentify = currentServiceRows[rowIndex][0]; // Get the resource name before any state update
+
 		setActiveResources((prev) => {
 			const updated = { ...prev };
 			const rows = [...(updated[serviceKey] || [])];
@@ -231,6 +248,21 @@ function HomePageClient() {
 			}
 			return updated;
 		});
+
+		// Also update the same resource in resourcesToPlan if it's selected
+		setResourcesToPlan(prev => {
+			const updated = { ...prev };
+			if (updated[serviceKey]) {
+				const rowIndexInPlan = updated[serviceKey].findIndex(r => r[0] === resourceToIdentify);
+				if (rowIndexInPlan !== -1) {
+					const newRow = [...updated[serviceKey][rowIndexInPlan]];
+					newRow[colIndex] = value;
+					updated[serviceKey][rowIndexInPlan] = newRow;
+				}
+			}
+			return updated;
+		});
+
 	};
 
 	const applyBulkUpdate = () => {
@@ -252,6 +284,26 @@ function HomePageClient() {
 					if (bulkSubnet && subnetCol !== -1) {
 						newRow[subnetCol] = bulkSubnet;
 					}
+					return newRow;
+				});
+			}
+			return updated;
+		});
+
+		// Also apply bulk update to selected resources
+		setResourcesToPlan(prev => {
+			const updated = { ...prev };
+			for (const serviceKey in updated) {
+				const header = updated[serviceKey][0];
+				const regionCol = header.indexOf("NewRegion");
+				const subnetCol = header.indexOf("NewSubnet");
+				if (regionCol === -1 && subnetCol === -1) continue;
+
+				updated[serviceKey] = updated[serviceKey].map((row, i) => {
+					if (i === 0) return row; // Skip header
+					const newRow = [...row];
+					if (bulkRegion && regionCol !== -1) newRow[regionCol] = bulkRegion;
+					if (bulkSubnet && subnetCol !== -1) newRow[subnetCol] = bulkSubnet;
 					return newRow;
 				});
 			}
@@ -318,6 +370,11 @@ function HomePageClient() {
 			document.removeEventListener("mousedown", handleClickOutside);
 		};
 	}, [addResourceRef]);
+
+	// Effect to set mounted state. This prevents hydration errors with time formatting.
+	useEffect(() => {
+		setHasMounted(true);
+	}, []);
 
 	// Helper function to get Tailwind CSS class for risk level
 	const getRiskColorClass = (riskLevel: string) => {
@@ -497,7 +554,7 @@ function HomePageClient() {
 			if (riskLevel >= "R2") {
 				setStatus("Step 4: Generating Terraform plan...");
 				// The handleManualAction will now automatically chain to the 'apply' step if needed.
-				await handleManualAction("plan", "POST", { resources: resourcesToPlan, workspaceId: "" }, true, "COMPLETED::", 5 * 60 * 1000); 
+				await handleManualAction("plan", "POST", { resources: resourcesToPlan, workspaceId: "" }, true, "COMPLETED::", 15 * 60 * 1000); 
 			}
 
 			// The rest of the automation (Apply, Migrate) is now handled by the chaining logic
@@ -530,8 +587,13 @@ function HomePageClient() {
 			// Step 2: Poll for completion if required
 			let finalStatus = "";
 			if (poll) {
+				// All terraform operations (plan, apply, destroy) use the same status endpoint
+				const statusEndpoint = (endpoint === 'plan' || endpoint === 'apply' || endpoint === 'destroy') 
+					? 'plan' 
+					: endpoint;
+
 				finalStatus = await pollStatus(
-					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/${endpoint}/status`,
+					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/${statusEndpoint}/status`,
 					completionPrefix,
 					timeout,
 				);
@@ -553,7 +615,10 @@ function HomePageClient() {
 				setViewMode('plan');
 				// If automation is running, continue to the next step (Apply)
 				if (isAutomationRunning && latestRiskMessage?.currentRiskLevel && latestRiskMessage.currentRiskLevel >= "R3") {
+					setStatus("Plan generated. Waiting 30s before applying...");
+					setLoading(false); // Turn off loader to allow plan review
 					await delay(30000); // Wait before applying
+					// The 'apply' action will set its own loading state.
 					await handleManualAction("apply", "POST", { resources: resourcesToPlan, workspaceId: parts[1] }, true, "APPLY_COMPLETED::", 15 * 60 * 1000);
 				}
 			} else if (endpoint === 'apply') {
@@ -566,10 +631,15 @@ function HomePageClient() {
 			// Error logging is handled in apiCall and pollStatus, this just catches to prevent crash
 			console.error(`Manual action ${endpoint} failed:`, error);
 		} finally {
-			// Ensure loader is always turned off
-			setLoading(false);
-			if (!isAutomationRunning || endpoint === 'apply' || (endpoint === 'plan' && latestRiskMessage?.currentRiskLevel === 'R2')) {
-				setIsAutomationRunning(false); // End of automation sequence
+			// Only turn off loading if not in a chained automation step that handles its own loading.
+			const isChainedPlan = isAutomationRunning && endpoint === 'plan' && latestRiskMessage?.currentRiskLevel && latestRiskMessage.currentRiskLevel >= "R3";
+			if (!isChainedPlan) {
+				setLoading(false);
+			}
+
+			// End the automation sequence only at the very last step.
+			if (endpoint === 'apply' || (endpoint === 'plan' && latestRiskMessage?.currentRiskLevel === 'R2')) {
+				setIsAutomationRunning(false);
 			}
 		}
 	};
@@ -620,11 +690,21 @@ function HomePageClient() {
 
 			if (regionKey && attrs.current_risk_level) {
 				setLatestRiskMessage(prev => {
-					const newTime = new Date(body.time);
-					// If a message already exists, only update if the new one is more recent.
-					if (prev && new Date(prev.time) >= newTime) {
+					// --- NEW RISK MANAGEMENT LOGIC ---
+					// 1. Never downgrade the risk level.
+					// 2. Only update if the new risk is higher than the previous highest.
+					const newRisk = attrs.current_risk_level;
+					const currentRisk = prev?.currentRiskLevel || "R0";
+
+					// Extract numbers from risk levels (e.g., "R3" -> 3)
+					const newRiskNum = parseInt(newRisk.replace("R", ""), 10);
+					const currentRiskNum = parseInt(currentRisk.replace("R", ""), 10);
+
+					// If the new risk is not higher, do not update the state.
+					if (newRiskNum <= currentRiskNum) {
 						return prev;
 					}
+
 					// Otherwise, update with the new (or first) message.
 					return {
 						regionName: body.region_name,
@@ -755,7 +835,9 @@ function HomePageClient() {
 							<div className="md:col-span-2">
 								<p className="text-slate-500">Last Updated:</p>
 								{isLatestRiskLoading ? <div className="h-5 w-1/2 bg-slate-200 rounded animate-pulse" /> :
-									<p className="font-mono text-slate-700">{new Date(latestRiskMessage?.time || "").toLocaleTimeString()}</p>
+									<p className="font-mono text-slate-700">
+										{hasMounted ? new Date(latestRiskMessage?.time || "").toLocaleTimeString() : "..."}
+									</p>
 								}
 							</div>
 							<div className="md:col-span-2 flex items-center justify-end">
@@ -900,7 +982,7 @@ function HomePageClient() {
 							</span>
 						</button>
 						<button
-							onClick={() => handleManualAction("plan", "POST", { resources: resourcesToPlan, workspaceId: "" }, true, "COMPLETED::", 5 * 60 * 1000)}
+							onClick={() => handleManualAction("plan", "POST", { resources: resourcesToPlan, workspaceId: "" }, true, "COMPLETED::", 15 * 60 * 1000)}
 							disabled={loading || isAutomationRunning}
 							className="group relative overflow-hidden bg-purple-600 hover:bg-purple-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-purple-200 active:scale-95 disabled:opacity-50"
 						>
