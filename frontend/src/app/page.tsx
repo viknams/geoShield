@@ -438,7 +438,7 @@ function HomePageClient() {
 				await pollStatus(
 					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/filter/status`,
 					"Filter process completed.",
-					60 * 1000,
+					5 * 60 * 1000, // Increased timeout to 5 minutes
 				);
 				await fetchActiveResources();
 				setViewMode("active");
@@ -859,7 +859,7 @@ function HomePageClient() {
 							</span>
 						</button>
 						<button
-							onClick={() => handleManualAction("filter", "POST", undefined, true, "Filter process completed.", 60 * 1000)}
+							onClick={() => handleManualAction("filter", "POST", undefined, true, "Filter process completed.", 5 * 60 * 1000)}
 							disabled={loading || isAutomationRunning}
 							className="group relative overflow-hidden bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-emerald-200 active:scale-95 disabled:opacity-50"
 						>

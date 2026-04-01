@@ -71,8 +71,8 @@ var HeaderMap = map[string]string{
 
 func (s *FilterService) FilterAndConsolidate(ctx context.Context, dataDir string, updateStatus func(string)) error {
 	// 1. Get active resource names from logs in the last 30 days
-	updateStatus("Analyzing usage logs from the last 30 days...")
-	log.Println("Analyzing usage logs from the last 30 days...")
+	updateStatus("Analyzing usage logs from the last 15 days...")
+	log.Println("Analyzing usage logs from the last 15 days...")
 	activeResources, err := s.getActiveResourcesFromLogs(ctx)
 	if err != nil {
 		log.Printf("[WARNING] Could not fetch logs for usage verification: %v. Falling back to foundation-only filtering.", err)
@@ -174,8 +174,8 @@ func (s *FilterService) FilterAndConsolidate(ctx context.Context, dataDir string
 
 func (s *FilterService) getActiveResourcesFromLogs(ctx context.Context) (map[string]string, error) {
 	active := make(map[string]string)
-	oneMonthAgo := time.Now().AddDate(0, -1, 0).Format(time.RFC3339)
-	filter := fmt.Sprintf("timestamp >= %q AND (protoPayload.resourceName:* OR protoPayload.methodName:*)", oneMonthAgo)
+	fifteenDaysAgo := time.Now().AddDate(0, 0, -15).Format(time.RFC3339)
+	filter := fmt.Sprintf("timestamp >= %q AND (protoPayload.resourceName:* OR protoPayload.methodName:*)", fifteenDaysAgo)
 
 	it := s.adminClient.Entries(ctx, logadmin.Filter(filter))
 	for {
