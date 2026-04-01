@@ -88,7 +88,7 @@ func main() {
 
 	// Pub/Sub Streaming
 	r.GET("/api/gcp/stream-pubsub-ws", h.StreamPubSubMessagesWS)
-	r.GET("/api/gcp/latest-pubsub-message", h.GetLatestPubSubMessage)
+	// r.GET("/api/gcp/latest-pubsub-message", h.GetLatestPubSubMessage)
 
 	// Add these two new routes for the migration endpoint
 	r.POST("/api/gcp/migrate", h.AppMigration)

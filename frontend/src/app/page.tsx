@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, Suspense } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
+import { useWebSocket } from "@/contexts/WebSocketContext";
 const GCP_REGIONS = [
 	"asia-east1",
 	"asia-east2",
@@ -75,9 +76,9 @@ function HomePageClient() {
 		currentRiskLevel: string;
 		time: string; // Timestamp from the message body
 	} | null>(null);
-	const [isLatestRiskLoading, setIsLatestRiskLoading] = useState(true);
+	const [isLatestRiskLoading, setIsLatestRiskLoading] = useState(false);
 	const [riskLevels, setRiskLevels] = useState<Record<string, { current: string; previous: string }>>({});
-	const ws = useRef<WebSocket | null>(null);
+	const { connect, latestMessage: webSocketLatestMessage } = useWebSocket();
 
 
 	const [bulkRegion, setBulkRegion] = useState("");
@@ -353,6 +354,9 @@ function HomePageClient() {
 		});
 	};
 
+	// Helper function to introduce a delay
+	const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 
 	// --- AUTOMATION ENGINE ---
 	const runAutomationSequence = async (riskLevel: string) => {
@@ -363,8 +367,9 @@ function HomePageClient() {
 		setStatus(`Automation started for Risk Level ${riskLevel}`);
 
 		try {
-			// R1: Auth -> Discover
-			if (riskLevel >= "R1") {
+			// R0: Auth
+			if (riskLevel >= "R0") {
+				setLoading(true);
 				setStatus("Step 1: Authenticating...");
 				await apiCall("auth", "POST");
 				await pollStatus(
@@ -373,7 +378,13 @@ function HomePageClient() {
 					45 * 1000,
 				);
 				setViewMode("auth");
+				setStatus("Auth complete. Waiting 7s before next step...");
+				setLoading(false);
+				await delay(7000);
+			}
 
+			if (riskLevel >= "R1") {
+				setLoading(true);
 				setStatus("Step 2: Discovering resources...");
 				await apiCall("discover", "POST");
 				await pollStatus(
@@ -383,10 +394,14 @@ function HomePageClient() {
 				);
 				await fetchResources();
 				setViewMode("discovered");
+				setStatus("Discovery complete. Waiting 20s before next step...");
+				setLoading(false);
+				await delay(20000); // This was already 20 seconds, updated status message for consistency
 			}
 
 			// R2: R1 actions + Filter -> Plan
 			if (riskLevel >= "R2") {
+				setLoading(true);
 				setStatus("Step 3: Filtering critical resources...");
 				await apiCall("filter", "POST");
 				await pollStatus(
@@ -396,8 +411,13 @@ function HomePageClient() {
 				);
 				await fetchActiveResources();
 				setViewMode("active");
+				setStatus("Filtering complete. Waiting 30s before next step...");
+				setLoading(false);
+				await delay(30000);
 
+				setLoading(true);
 				setStatus("Step 4: Generating Terraform plan...");
+				await apiCall("plan", "POST", { resources: activeResources, workspaceId: "" });
 				const planStatus = await pollStatus(
 					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/plan/status`,
 					"COMPLETED::",
@@ -407,10 +427,14 @@ function HomePageClient() {
 				setWorkspaceId(parts[1]);
 				setPlanOutput(parts[2]);
 				setViewMode("plan");
+				setStatus("Plan generation complete. Waiting 30s before next step...");
+				setLoading(false);
+				await delay(30000);
 			}
 
 			// R3: R2 actions + Apply
 			if (riskLevel >= "R3") {
+				setLoading(true);
 				setStatus("Step 5: Applying Terraform plan...");
 				await apiCall("apply", "POST", { resources: activeResources, workspaceId: workspaceId });
 				const applyStatus = await pollStatus(
@@ -421,10 +445,14 @@ function HomePageClient() {
 				const finalApplyOutput = applyStatus.substring("APPLY_COMPLETED::".length);
 				setApplyOutput(finalApplyOutput);
 				setViewMode("apply");
+				setStatus("Terraform apply complete. Waiting 30s before next step...");
+				setLoading(false);
+				await delay(30000);
 			}
 
 			// R4: R3 actions + Migrate
 			if (riskLevel >= "R4") {
+				setLoading(true);
 				setStatus("Step 6: Starting application migration...");
 				await apiCall("migrate", "POST");
 				await pollStatus(
@@ -432,13 +460,18 @@ function HomePageClient() {
 					"Completed",
 					2 * 60 * 60 * 1000,
 				);
+				setStatus("Application migration complete.");
+				setLoading(false);
 			}
 			setStatus(`Automation completed for Risk Level ${riskLevel}.`);
 		} catch (error: any) {
+			// If any step fails, ensure the loader is turned off.
+			setLoading(false);
 			setStatus(`Automation failed: ${error.message}`);
 		} finally {
 			setIsAutomationRunning(false);
-			setLoading(false);
+			// The final setLoading(false) is now handled within the try/catch blocks
+			// to allow for the step-by-step UI updates.
 		}
 	};
 
@@ -517,105 +550,50 @@ function HomePageClient() {
 		// We only want this to run once on load when a project is in the URL
 	}, [searchParams]);
 
-	// Fetch the single latest message on page load for instant UI update
 	useEffect(() => {
-		if (!projectID) return;
+		if (projectID) {
+			connect(projectID);
+		}
+	}, [projectID, connect]);
 
-		setIsLatestRiskLoading(true);
-		const fetchLatestMessage = async () => {
-			try {
-				const res = await fetch(
-					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/latest-pubsub-message?project=${projectID}`
-				);
-				if (!res.ok) return; // Don't worry if it fails, WebSocket will still connect
+	useEffect(() => {
+		if (webSocketLatestMessage) {
+			const attrs = webSocketLatestMessage.attributes;
+			const body = JSON.parse(webSocketLatestMessage.data);
+			const regionKey = body.id;
 
-				const data = await res.json();
-				const attrs = data.attributes;
-				const body = JSON.parse(data.data);
-
-				setLatestRiskMessage({
-					regionName: body.region_name,
-					cloudProvider: body.cloud_provider,
-					id: body.id,
-					previousRiskLevel: attrs.previous_risk_level || "N/A",
-					currentRiskLevel: attrs.current_risk_level,
-					time: body.time,
-				});
-				setIsLatestRiskLoading(false);
-			} catch (e) {
-				console.warn("Could not fetch latest risk message on load:", e);
+			// On first message, stop the loading indicator.
+			if (isLatestRiskLoading) {
 				setIsLatestRiskLoading(false);
 			}
-		};
-		fetchLatestMessage();
-	}, [projectID]);
 
-	// WebSocket connection for live risk levels
-	useEffect(() => {
-		if (!projectID) return;
-		// Prevent re-connecting if a socket already exists and is not closed
-		if (ws.current && ws.current.readyState !== WebSocket.CLOSED) return;
-
-		const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
-		const wsUrl = apiUrl.replace(/^http/, "ws") + `/api/gcp/stream-pubsub-ws?project=${projectID}`;
-
-		console.log("Connecting to Risk Stream WebSocket...");
-		const socket = new WebSocket(wsUrl);
-		ws.current = socket;
-
-		socket.onmessage = (event) => {
-			const parsedData = JSON.parse(event.data as string);
-
-			// We only care about the actual messages with attributes, not connection status messages
-			if (parsedData.attributes) {
-				const attrs = parsedData.attributes;
-				const body = JSON.parse(parsedData.data);
-
-				// The 'id' in the body seems to be the provider-specific region name (e.g., us-east4)
-				const regionKey = body.id;
-
-				if (regionKey && attrs.current_risk_level) {
-					// Update the state for the latest overall risk message
-					setLatestRiskMessage({
+			if (regionKey && attrs.current_risk_level) {
+				setLatestRiskMessage(prev => {
+					const newTime = new Date(body.time);
+					// If a message already exists, only update if the new one is more recent.
+					if (prev && new Date(prev.time) >= newTime) {
+						return prev;
+					}
+					// Otherwise, update with the new (or first) message.
+					return {
 						regionName: body.region_name,
 						cloudProvider: body.cloud_provider,
 						id: body.id,
 						previousRiskLevel: attrs.previous_risk_level || "N/A",
 						currentRiskLevel: attrs.current_risk_level,
 						time: body.time,
-					});
-					// Update the state for individual risk levels in tables
-					setRiskLevels(prev => ({
-						...prev,
-						[regionKey]: {
-							current: attrs.current_risk_level,
-							previous: attrs.previous_risk_level || "N/A",
-						},
-					}));
-				}
+					};
+				});
+				setRiskLevels(prev => ({
+					...prev,
+					[regionKey]: {
+						current: attrs.current_risk_level,
+						previous: attrs.previous_risk_level || "N/A",
+					},
+				}));
 			}
-		};
-
-		// Note: The `riskLevels` state is keyed by the cloud provider's region ID (e.g., "us-east4").
-		// Ensure that the "Region" column in your resource tables (Discovered/Active) also contains
-		// these cloud provider region IDs for the risk display to function correctly.
-
-		socket.onerror = (err) => {
-			console.error("Risk Stream WebSocket error:", err);
-		};
-
-		socket.onclose = () => {
-			console.log("Risk Stream WebSocket disconnected.");
-		};
-
-		return () => {
-			// Check if the socket instance exists and is open before closing
-			if (socket && socket.readyState === WebSocket.OPEN) {
-				socket.close();
-				console.log("Cleaned up Risk Stream WebSocket.");
-			}
-		};
-	}, [projectID]);
+		}
+	}, [webSocketLatestMessage]);
 
 	const steps = [
 		{ id: "auth", label: "Auth", color: "bg-orange-500" },
@@ -690,7 +668,7 @@ function HomePageClient() {
 					</div>
 				</header>
 
-				{(latestRiskMessage || isLatestRiskLoading) && (
+				{(latestRiskMessage) && (
 					<section className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 animate-in fade-in duration-300">
 						<h2 className="text-lg font-bold text-slate-800 flex items-center gap-2 mb-4">
 							<span className="w-1.5 h-6 bg-red-500 rounded-full" />
