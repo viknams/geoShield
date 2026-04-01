@@ -625,6 +625,12 @@ function HomePageClient() {
 				const finalApplyOutput = finalStatus.substring(completionPrefix.length);
 				setApplyOutput(finalApplyOutput);
 				setViewMode('apply');
+				// If automation is running for R4, continue to the migrate step
+				if (isAutomationRunning && latestRiskMessage?.currentRiskLevel && latestRiskMessage.currentRiskLevel >= "R4") {
+					setStatus("Apply complete. Waiting 30s before migrating...");
+					await delay(30000);
+					await handleManualAction("migrate", "POST", undefined, true, "Completed", 2 * 60 * 60 * 1000);
+				}
 			}
 
 		} catch (error) {
@@ -638,7 +644,7 @@ function HomePageClient() {
 			}
 
 			// End the automation sequence only at the very last step.
-			if (endpoint === 'apply' || (endpoint === 'plan' && latestRiskMessage?.currentRiskLevel === 'R2')) {
+			if (endpoint === 'migrate' || (endpoint === 'apply' && latestRiskMessage?.currentRiskLevel === 'R3') || (endpoint === 'plan' && latestRiskMessage?.currentRiskLevel === 'R2')) {
 				setIsAutomationRunning(false);
 			}
 		}
