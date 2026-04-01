@@ -442,25 +442,10 @@ function HomePageClient() {
 				);
 				await fetchActiveResources();
 				setViewMode("active");
-				setStatus("Filtering complete. Waiting 30s before next step...");
-				setLoading(false);
-				await delay(30000);
-
-				setLoading(true);
-				setStatus("Step 4: Generating Terraform plan...");
-				await apiCall("plan", "POST", { resources: resourcesToPlan, workspaceId: "" });
-				const planStatus = await pollStatus(
-					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/plan/status`,
-					"COMPLETED::",
-					5 * 60 * 1000,
-				);
-				const parts = planStatus.split("::");
-				setWorkspaceId(parts[1]);
-				setPlanOutput(parts[2]);
-				setViewMode("plan");
-				setStatus("Plan generation complete. Waiting 30s before next step...");
-				setLoading(false);
-				await delay(30000);
+				setStatus("Please review the filtered resources, make selections, and confirm to proceed.");
+				setLoading(false); // Stop the loader and wait for user confirmation.
+				// The sequence will be continued by the 'Confirm Selection & View Plan' button.
+				return; 
 			}
 
 			// R3: R2 actions + Apply
@@ -497,14 +482,41 @@ function HomePageClient() {
 			setStatus(`Automation completed for Risk Level ${riskLevel}.`);
 		} catch (error: any) {
 			// If any step fails, ensure the loader is turned off.
+			setIsAutomationRunning(false);
 			setLoading(false);
 			setStatus(`Automation failed: ${error.message}`);
-		} finally {
-			setIsAutomationRunning(false);
-			// The final setLoading(false) is now handled within the try/catch blocks
-			// to allow for the step-by-step UI updates.
 		}
 	};
+
+	const continueAutomation = async (riskLevel: string) => {
+		if (!isAutomationRunning) return;
+		setLoading(true);
+		try {
+			// This function is called after the user confirms the selection in the 'active' view,
+			// continuing the sequence from the 'plan' step onwards.
+			if (riskLevel >= "R2") {
+				setStatus("Step 4: Generating Terraform plan...");
+				// The handleManualAction will now automatically chain to the 'apply' step if needed.
+				await handleManualAction("plan", "POST", { resources: resourcesToPlan, workspaceId: "" }, true, "COMPLETED::", 5 * 60 * 1000); 
+			}
+
+			// The rest of the automation (Apply, Migrate) is now handled by the chaining logic
+			// inside handleManualAction. We check if the process is still running.
+			if (isAutomationRunning) {
+				// If we reach here, it means the sequence completed (e.g., R2 plan finished).
+				// For R3+, the apply step will set isAutomationRunning to false.
+				if (riskLevel < "R3") {
+					setStatus(`Automation completed for Risk Level ${riskLevel}.`);
+					setIsAutomationRunning(false);
+				}
+			}
+		} catch (error) {
+			// Errors are handled inside handleManualAction, which will update the status.
+			setIsAutomationRunning(false);
+			setLoading(false);
+			setStatus(`Automation failed during continuation: ${error}`);
+		}
+	}
 
 	// Generic handler for manual button clicks
 	const handleManualAction = async (endpoint: string, method: string, bodyData?: any, poll: boolean = false, completionPrefix: string = "", timeout: number = 0) => {
@@ -539,6 +551,11 @@ function HomePageClient() {
 				setWorkspaceId(parts[1]);
 				setPlanOutput(parts[2]);
 				setViewMode('plan');
+				// If automation is running, continue to the next step (Apply)
+				if (isAutomationRunning && latestRiskMessage?.currentRiskLevel && latestRiskMessage.currentRiskLevel >= "R3") {
+					await delay(30000); // Wait before applying
+					await handleManualAction("apply", "POST", { resources: resourcesToPlan, workspaceId: parts[1] }, true, "APPLY_COMPLETED::", 15 * 60 * 1000);
+				}
 			} else if (endpoint === 'apply') {
 				const finalApplyOutput = finalStatus.substring(completionPrefix.length);
 				setApplyOutput(finalApplyOutput);
@@ -551,6 +568,9 @@ function HomePageClient() {
 		} finally {
 			// Ensure loader is always turned off
 			setLoading(false);
+			if (!isAutomationRunning || endpoint === 'apply' || (endpoint === 'plan' && latestRiskMessage?.currentRiskLevel === 'R2')) {
+				setIsAutomationRunning(false); // End of automation sequence
+			}
 		}
 	};
 
@@ -1191,6 +1211,22 @@ function HomePageClient() {
 										</button>
 									</div>
 								</div>
+								{isAutomationRunning && (
+									<div className="mt-6 flex flex-col items-center justify-center gap-4">
+										<div className="flex items-center gap-2 bg-yellow-50 border border-yellow-200 text-yellow-700 text-xs font-semibold px-4 py-2 rounded-lg">
+											<svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+											<span>Please ensure all critical resources are selected before proceeding.</span>
+										</div>
+										<button
+											onClick={() => continueAutomation(latestRiskMessage?.currentRiskLevel || "")}
+											disabled={loading || Object.keys(resourcesToPlan).length === 0}
+											className="bg-purple-600 hover:bg-purple-700 text-white px-6 py-3 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-purple-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-3 text-base"
+										>
+											<svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+											Confirm Selection & View Plan
+										</button>
+									</div>
+								)}
 							</div>
 							{Object.entries(activeResources).map(([service, rows]) => {
 								const sectionKey = `active_${service}`;

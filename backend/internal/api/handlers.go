@@ -1521,7 +1521,7 @@ func (h *APIHandler) StreamPubSubMessagesWS(c *gin.Context) {
 	})
 
 	// Create a dedicated subscription, checking if it exists first.
-	subID := "geo-shiled-tp-sub" // Dedicated subscription name
+	subID := os.Getenv("PUBSUB_SUB_ID") // "geo-shiled-tp-sub" // Dedicated subscription name
 	sub := client.Subscription(subID)
 	exists, err = sub.Exists(ctx)
 	if err != nil {
