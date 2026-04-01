@@ -61,6 +61,9 @@ function HomePageClient() {
 	const [activeResources, setActiveResources] = useState<
 		Record<string, string[][]>
 	>({});
+	const [resourcesToPlan, setResourcesToPlan] = useState<
+		Record<string, string[][]>
+	>({});
 	const [viewMode, setViewMode] = useState<
 		"none" | "auth" | "discovered" | "active" | "plan" | "apply"
 	>("none");
@@ -164,6 +167,8 @@ function HomePageClient() {
 	};
 
 	const removeActiveResource = (serviceKey: string, rowIndex: number) => {
+		const resourceToRemove = activeResources[serviceKey]?.[rowIndex];
+
 		setActiveResources((prev) => {
 			const updated = { ...prev };
 			const rows = [...(updated[serviceKey] || [])];
@@ -175,10 +180,34 @@ function HomePageClient() {
 			}
 			return updated;
 		});
+
+		// Also remove it from the list of resources to be planned
+		if (resourceToRemove) {
+			const resourceName = resourceToRemove[0];
+			setResourcesToPlan((prev) => {
+				const updated = { ...prev };
+				if (updated[serviceKey]) {
+					updated[serviceKey] = updated[serviceKey].filter(
+						(r) => r[0] !== resourceName,
+					);
+					if (updated[serviceKey].length <= 1) {
+						// If only the header is left, remove the service key entirely
+						delete updated[serviceKey];
+					}
+				}
+				return updated;
+			});
+		}
 	};
 
 	const removeActiveService = (serviceKey: string) => {
 		setActiveResources((prev) => {
+			const updated = { ...prev };
+			delete updated[serviceKey];
+			return updated;
+		});
+		// Also remove the entire service from the list of resources to be planned
+		setResourcesToPlan((prev) => {
 			const updated = { ...prev };
 			delete updated[serviceKey];
 			return updated;
@@ -266,6 +295,8 @@ function HomePageClient() {
 		setPlanOutput("");
 		setApplyOutput("");
 		setResources({});
+		// When project changes, clear the selected resources for planning
+		setResourcesToPlan({});
 		setActiveResources({});
 		setStatus("");
 		setViewMode("none");
@@ -417,7 +448,7 @@ function HomePageClient() {
 
 				setLoading(true);
 				setStatus("Step 4: Generating Terraform plan...");
-				await apiCall("plan", "POST", { resources: activeResources, workspaceId: "" });
+				await apiCall("plan", "POST", { resources: resourcesToPlan, workspaceId: "" });
 				const planStatus = await pollStatus(
 					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/plan/status`,
 					"COMPLETED::",
@@ -436,7 +467,7 @@ function HomePageClient() {
 			if (riskLevel >= "R3") {
 				setLoading(true);
 				setStatus("Step 5: Applying Terraform plan...");
-				await apiCall("apply", "POST", { resources: activeResources, workspaceId: workspaceId });
+				await apiCall("apply", "POST", { resources: resourcesToPlan, workspaceId: workspaceId });
 				const applyStatus = await pollStatus(
 					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/plan/status`, // Still polls plan status
 					"APPLY_COMPLETED::",
@@ -723,7 +754,7 @@ function HomePageClient() {
 
 				<section className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 space-y-6">
 					<div className="flex flex-col md:flex-row items-center justify-between gap-4">
-						<div className="flex items-center gap-3 bg-slate-50 text-slate-600 px-5 py-3 rounded-xl shadow-sm border border-slate-100">
+						<div className="flex flex-1 items-center gap-3 bg-slate-50 text-slate-600 px-5 py-3 rounded-xl shadow-sm border border-slate-100 min-w-0">
 							<svg
 								className={`w-5 h-5 ${loading || isAutomationRunning ? "animate-spin" : ""}`}
 								fill="none"
@@ -737,7 +768,10 @@ function HomePageClient() {
 									d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
 								/>
 							</svg>
-							<span className="text-sm font-bold tracking-wide">
+							<span
+								className="text-sm font-bold tracking-wide truncate"
+								title={status}
+							>
 								{isAutomationRunning ? `AUTO: ${status}` : status || "Ready"}
 							</span>
 						</div>
@@ -846,7 +880,7 @@ function HomePageClient() {
 							</span>
 						</button>
 						<button
-							onClick={() => handleManualAction("plan", "POST", { resources: activeResources, workspaceId: "" }, true, "COMPLETED::", 5 * 60 * 1000)}
+							onClick={() => handleManualAction("plan", "POST", { resources: resourcesToPlan, workspaceId: "" }, true, "COMPLETED::", 5 * 60 * 1000)}
 							disabled={loading || isAutomationRunning}
 							className="group relative overflow-hidden bg-purple-600 hover:bg-purple-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-purple-200 active:scale-95 disabled:opacity-50"
 						>
@@ -1224,6 +1258,29 @@ function HomePageClient() {
 												<table className="w-full text-left text-xs">
 													<thead className="bg-white text-slate-400 border-b border-slate-50">
 														<tr>
+															<th className="px-4 py-4">
+																<input
+																	type="checkbox"
+																	className="h-4 w-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500"
+																	checked={
+																		// Checked if all resources in this service are selected
+																		(resourcesToPlan[service]?.length || 0) - 1 === rows.length - 1 && rows.length > 1
+																	}
+																	onChange={(e) => {
+																		setResourcesToPlan((prev) => {
+																			const updated = { ...prev };
+																			if (e.target.checked) {
+																				// Select all resources for this service
+																				updated[service] = rows;
+																			} else {
+																				// Deselect all for this service
+																				delete updated[service];
+																			}
+																			return updated;
+																		});
+																	}}
+																/>
+															</th>
 															<th className="px-6 py-4 font-bold uppercase tracking-wider text-red-500">Risk</th>
 															{rows[0]?.map((col, i) => {
 																const isEditable =
@@ -1246,6 +1303,36 @@ function HomePageClient() {
 																key={i}
 																className="hover:bg-emerald-50/50 transition-colors"
 															>
+																<td className="px-4 py-4">
+																	<input
+																		type="checkbox"
+																		className="h-4 w-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500"
+																		checked={
+																			resourcesToPlan[service]?.some(
+																				(r) => r[0] === row[0]
+																			) ?? false
+																		}
+																		onChange={(e) => {
+																			setResourcesToPlan((prev) => {
+																				const updated = { ...prev };
+																				if (e.target.checked) {
+																					if (!updated[service]) {
+																						updated[service] = [rows[0]]; // Add header
+																					}
+																					updated[service] = [...updated[service], row];
+																				} else {
+																					updated[service] = updated[service].filter(
+																						(r) => r[0] !== row[0]
+																					);
+																					if (updated[service].length <= 1) {
+																						delete updated[service];
+																					}
+																				}
+																				return updated;
+																			});
+																		}}
+																	/>
+																</td>
 																<td className="px-6 py-4">
 																	{(() => {
 																		const region = row[rows[0]?.indexOf("Region")];
@@ -1354,7 +1441,7 @@ function HomePageClient() {
 										&larr; Back to Edit
 									</button>
 									<button
-										onClick={() => handleManualAction("apply", "POST", { resources: activeResources, workspaceId: workspaceId }, true, "APPLY_COMPLETED::", 15 * 60 * 1000)}
+										onClick={() => handleManualAction("apply", "POST", { resources: resourcesToPlan, workspaceId: workspaceId }, true, "APPLY_COMPLETED::", 15 * 60 * 1000)}
 										disabled={loading}
 										className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-md text-sm font-bold transition-all disabled:opacity-50 active:scale-95 flex items-center gap-2"
 									>
