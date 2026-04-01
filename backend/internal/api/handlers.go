@@ -65,6 +65,7 @@ type APIHandler struct {
 	// For Cancellation
 	runningCmdLock sync.Mutex
 	runningCmd     *exec.Cmd
+	cancelFunc     context.CancelFunc
 }
 
 func (h *APIHandler) AuthGCP(c *gin.Context) {
@@ -154,6 +155,25 @@ func (h *APIHandler) GetMigrationStatus(c *gin.Context) {
 }
 
 func (h *APIHandler) CancelOperation(c *gin.Context) {
+	h.mu.Lock()
+	if h.cancelFunc != nil {
+		log.Println("Calling context cancel function.")
+		h.cancelFunc()
+		h.cancelFunc = nil // Prevent multiple calls
+
+		// Update all statuses to reflect cancellation
+		h.planStatus = "Operation cancelled by user."
+		h.discoveryStatus = "Operation cancelled by user."
+		h.filterStatus = "Operation cancelled by user."
+		h.migrationStatus = "Operation cancelled by user."
+		h.mu.Unlock()
+
+		c.JSON(http.StatusOK, gin.H{"status": "Cancellation signal sent successfully."})
+		return
+	}
+	h.mu.Unlock()
+
+	// --- Fallback for exec.Cmd based operations ---
 	h.runningCmdLock.Lock()
 	defer h.runningCmdLock.Unlock()
 
@@ -178,6 +198,9 @@ func (h *APIHandler) CancelOperation(c *gin.Context) {
 		// Update the status that the frontend polls to give immediate feedback
 		h.mu.Lock()
 		h.planStatus = "Operation cancelled by user."
+		h.discoveryStatus = "Operation cancelled by user."
+		h.filterStatus = "Operation cancelled by user."
+		h.migrationStatus = "Operation cancelled by user."
 		h.mu.Unlock()
 
 		c.JSON(http.StatusOK, gin.H{"status": "Cancellation signal sent successfully."})
@@ -185,7 +208,6 @@ func (h *APIHandler) CancelOperation(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "No cancellable operation was found to be running."})
 	}
 }
-
 
 func (h *APIHandler) DiscoverGCP(c *gin.Context) {
 	projectID := c.Query("project")
@@ -204,7 +226,21 @@ func (h *APIHandler) DiscoverGCP(c *gin.Context) {
 	h.mu.Unlock()
 
 	go func() {
-		ctx := context.Background()
+		// Create a cancellable context for this operation
+		ctx, cancel := context.WithCancel(context.Background())
+		// Store the cancel function in the handler so other methods can access it
+		h.mu.Lock()
+		h.cancelFunc = cancel
+		h.mu.Unlock()
+
+		// Ensure the cancel function is called when the goroutine finishes
+		defer func() {
+			cancel()
+			h.mu.Lock()
+			h.cancelFunc = nil // Clear the cancel function
+			h.mu.Unlock()
+		}()
+
 		svc, err := discovery.NewDiscoveryService(ctx, projectID, impersonate, h.ServiceAccountJSON)
 		if err != nil {
 			h.mu.Lock()
@@ -217,9 +253,17 @@ func (h *APIHandler) DiscoverGCP(c *gin.Context) {
 		projectDataDir := strings.Replace(h.DataDir, "GCP_PROJECT", projectID, 1)
 		log.Printf("DiscoverGCP: Using data directory: %s", projectDataDir)
 		if err := svc.Discover(ctx, projectDataDir); err != nil {
-			h.mu.Lock()
-			h.discoveryStatus = fmt.Sprintf("Discovery failed: %v", err)
-			h.mu.Unlock()
+			// Check if the error was due to cancellation
+			if ctx.Err() == context.Canceled {
+				log.Println("Discovery operation was cancelled.")
+				h.mu.Lock()
+				h.discoveryStatus = "Discovery cancelled by user."
+				h.mu.Unlock()
+			} else {
+				h.mu.Lock()
+				h.discoveryStatus = fmt.Sprintf("Discovery failed: %v", err)
+				h.mu.Unlock()
+			}
 			return
 		}
 
@@ -1368,6 +1412,12 @@ type WebSocketMessage struct {
 	MessageID   string            `json:"messageId"`
 }
 
+// RiskMessageBody is used to unmarshal the JSON data within a Pub/Sub message
+// to access the region name for filtering.
+type RiskMessageBody struct {
+	RegionName string `json:"region_name"`
+}
+
 var upgrader = websocket.Upgrader{
 	// Allow all origins for development purposes.
 	// In production, you should restrict this to your frontend's domain.
@@ -1470,24 +1520,31 @@ func (h *APIHandler) StreamPubSubMessagesWS(c *gin.Context) {
 		"topicName": topicName,
 	})
 
-	// Create a temporary subscription for this WebSocket session
-	subPrefix := h.PubSubSubPrefix
-	if subPrefix == "" {
-		subPrefix = "geoshield-ws-sub-" // Fallback prefix
-	}
-	subID := subPrefix + uuid.New().String()
-	sub, err := client.CreateSubscription(ctx, subID, pubsub.SubscriptionConfig{
-		Topic:            topic,
-		ExpirationPolicy: 24 * time.Hour, // Automatically clean up (minimum value is 24h)
-	})
+	// Create a dedicated subscription, checking if it exists first.
+	subID := "geo-shiled-tp-sub" // Dedicated subscription name
+	sub := client.Subscription(subID)
+	exists, err = sub.Exists(ctx)
 	if err != nil {
-		log.Printf("Failed to create temporary subscription: %v", err)
-		errMsg := "Error: Failed to create temporary subscription."
-		conn.WriteJSON(gin.H{"error": errMsg})
+		log.Printf("Failed to check if subscription '%s' exists: %v", subID, err)
+		conn.WriteJSON(gin.H{"error": "Failed to verify Pub/Sub subscription."})
 		return
 	}
-	// Ensure the subscription is deleted when the function returns (e.g., on disconnect)
-	defer sub.Delete(context.Background())
+	if !exists {
+		log.Printf("Subscription '%s' not found, creating it now.", subID)
+		sub, err = client.CreateSubscription(ctx, subID, pubsub.SubscriptionConfig{
+			Topic:            topic,
+			ExpirationPolicy: nil, // Make the subscription permanent
+		})
+		if err != nil {
+			log.Printf("Failed to create permanent subscription '%s': %v", subID, err)
+			conn.WriteJSON(gin.H{"error": "Failed to create Pub/Sub subscription."})
+			return
+		}
+	} else {
+		log.Printf("Using existing subscription: '%s'", subID)
+	}
+
+	// We no longer want to delete the subscription on disconnect, so the defer is removed.
 
 	// --- RETAIN AND DISPLAY HISTORY ---
 	// This is the key change. We seek the subscription's starting point to 1 hours ago.
@@ -1536,14 +1593,48 @@ func (h *APIHandler) StreamPubSubMessagesWS(c *gin.Context) {
 		}()
 		err := sub.Receive(ctx, func(ctx context.Context, msg *pubsub.Message) {
 			log.Printf("Got message: %s", string(msg.Data))
+
+			// --- FILTERING LOGIC ---
+			// 1. Filter by cloud provider
+			if provider, ok := msg.Attributes["cloud_provider"]; !ok || provider != "gcp" {
+				log.Printf("Skipping message for provider: %s", provider)
+				msg.Ack()
+				return
+			}
+
+			// 2. Filter by region name
+			var body RiskMessageBody
+			if err := json.Unmarshal(msg.Data, &body); err != nil {
+				log.Printf("Failed to unmarshal message body for region check: %v", err)
+				msg.Ack()
+				return
+			}
+			if body.RegionName != "Taiwan Strait" {
+				log.Printf("Skipping message for region: %s", body.RegionName)
+				msg.Ack()
+				return
+			}
+			// --- END FILTERING ---
+
+			// --- FIX: Copy attributes to prevent race condition ---
+			// The msg object is reused by the Pub/Sub client library. We must copy the attributes
+			// to ensure they are stable when the message is processed in the writer goroutine.
+			newAttrs := make(map[string]string)
+			for k, v := range msg.Attributes {
+				newAttrs[k] = v
+			}
+
+			// Acknowledge the message *before* sending it to the channel.
+			// This prevents WebSocket backpressure from causing a Pub/Sub deadline exceeded error.
+			msg.Ack()
+
 			// Construct a WebSocketMessage struct and send it to the channel.
 			sendChan <- WebSocketMessage{
 				Data:        string(msg.Data),
-				Attributes:  msg.Attributes,
+				Attributes:  newAttrs, // Use the copied map
 				PublishTime: msg.PublishTime,
 				MessageID:   msg.ID,
 			}
-			msg.Ack()
 		})
 		// context.Canceled is an expected error when the client disconnects.
 		// We only log other, unexpected errors.
@@ -1666,72 +1757,4 @@ func (h *APIHandler) AppMigration(c *gin.Context) {
 	} else {
 		c.JSON(http.StatusOK, gin.H{"status": "App migration script started."})
 	}
-}
-
-func (h *APIHandler) GetLatestPubSubMessage(c *gin.Context) {
-	subscriptionID := h.PubSubLatestMsgSub
-	if subscriptionID == "" {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "PUBSUB_LATEST_MSG_SUB environment variable not set."})
-		return
-	}
-
-	var saInfo struct {
-		ProjectID string `json:"project_id"`
-	}
-	if err := json.Unmarshal([]byte(h.PubSubServiceAccountJSON), &saInfo); err != nil || saInfo.ProjectID == "" {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Pub/Sub service account is not configured correctly on the server."})
-		return
-	}
-	pubsubProjectID := saInfo.ProjectID
-
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second) // Overall timeout for the request
-	defer cancel()
-
-	opts := []option.ClientOption{option.WithCredentialsJSON([]byte(h.PubSubServiceAccountJSON))}
-	client, err := pubsub.NewClient(ctx, pubsubProjectID, opts...)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to create Pub/Sub client: %v", err)})
-		return
-	}
-	defer client.Close()
-
-	sub := client.Subscription(subscriptionID)
-
-	var latestGCPMsg *pubsub.Message
-	var mu sync.Mutex
-
-	// Use a timed context to receive messages for a short duration (e.g., 3 seconds)
-	receiveCtx, receiveCancel := context.WithTimeout(ctx, 3*time.Second)
-	defer receiveCancel()
-
-	err = sub.Receive(receiveCtx, func(ctx context.Context, msg *pubsub.Message) {
-		// Always Nack the message so it remains available for the next page load.
-		// This subscription is only for peeking at the latest messages.
-		defer msg.Nack()
-
-		// --- FILTERING LOGIC ---
-		if provider, ok := msg.Attributes["cloud_provider"]; !ok || provider != "gcp" {
-			return // Ignore messages that are not for GCP
-		}
-
-		mu.Lock()
-		defer mu.Unlock()
-		// Keep the message with the newest publish time
-		if latestGCPMsg == nil || msg.PublishTime.After(latestGCPMsg.PublishTime) {
-			latestGCPMsg = msg
-		}
-	})
-
-	if latestGCPMsg == nil {
-		c.JSON(http.StatusNoContent, gin.H{"status": "No recent GCP risk messages found."})
-		return
-	}
-
-	// Return the message in the same format as the WebSocket stream
-	c.JSON(http.StatusOK, WebSocketMessage{
-		Data:        string(latestGCPMsg.Data),
-		Attributes:  latestGCPMsg.Attributes,
-		PublishTime: latestGCPMsg.PublishTime,
-		MessageID:   latestGCPMsg.ID,
-	})
 }

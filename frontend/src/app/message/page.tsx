@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, FormEvent, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
+import { useWebSocket } from "@/contexts/WebSocketContext";
 
 export default function StreamingPageWrapper() {
 	return (
@@ -20,7 +21,7 @@ function StreamingPage() {
 	const [streamingTopicName, setStreamingTopicName] = useState<string>("");
 	const [messages, setMessages] = useState<Array<{ text: string; receivedTime: string; publishTime: string; messageId: string }>>([]);
 	const [newMessage, setNewMessage] = useState("");
-	const ws = useRef<WebSocket | null>(null);
+	const { ws, connect, disconnect, latestMessage } = useWebSocket();
 	const [status, setStatus] = useState("Connecting to stream...");
 	const [error, setError] = useState("");
 	const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -35,98 +36,42 @@ function StreamingPage() {
 	}, [searchParams]);
 
 	useEffect(() => {
-		if (!projectID) return;
+		if (projectID) {
+			connect(projectID);
+		}
+	}, [projectID, connect]);
 
-		// Prevent re-connecting if a socket already exists and is not closed
-		if (ws.current && ws.current.readyState !== WebSocket.CLOSED) return;
-
-		// Construct WebSocket URL (ws:// or wss://)
-		const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
-		const wsUrl = apiUrl.replace(/^http/, "ws") + `/api/gcp/stream-pubsub-ws?project=${projectID}`;
-		console.log("Connecting to Message Stream WebSocket...");
-
-		const socket = new WebSocket(wsUrl);
-		ws.current = socket;
-
-		socket.onopen = () => {
-			setStatus("Connected. Waiting for messages...");
-			setError("");
-		};
-
-		socket.onmessage = (event) => {
-			const parsedData = JSON.parse(event.data as string);
-
-			if (parsedData.error) { // Handle structured errors from backend
-				setError(parsedData.error);
-				setStatus("Connection failed.");
-				socket.close();
-				return;
-			}
-
-			// Handle initial connection message from backend
-			if (parsedData.projectID) {
-				setStreamingProjectID(parsedData.projectID);
-				if (parsedData.topicName) {
-					setStreamingTopicName(parsedData.topicName);
-				}
-				setStatus(parsedData.status || "Connected. Waiting for messages...");
-				return; // This is not a message to display in the list
-			}
-
-			// --- KEY CHANGE: Parse the inner JSON and format the message ---
-			let displayText = parsedData.data; // Fallback to raw data if attributes are missing
+	useEffect(() => {
+		if (latestMessage) {
+			const parsedData = latestMessage;
+			let displayText = parsedData.data;
 			const attrs = parsedData.attributes;
 
 			if (attrs && attrs.region_id && attrs.current_risk_level) {
-				// Prefer attributes for the summary message
-				const body = JSON.parse(parsedData.data); // Still need body for region_name
+				const body = JSON.parse(parsedData.data);
 				const regionName = body.region_name || attrs.region_id;
 				const cloudProvider = attrs.cloud_provider || body.cloud_provider;
 
 				displayText = `Risk level for '${regionName}' (${cloudProvider}) changed from ${attrs.previous_risk_level || "N/A"} to ${attrs.current_risk_level}.`;
 			} else {
-				// Fallback to old method if attributes are not present
-				console.warn("Message missing attributes, falling back to body parsing for display.", parsedData);
 				const body = JSON.parse(parsedData.data);
 				displayText = `Risk level for '${body.region_name}' (${body.cloud_provider}/${body.id}) changed from ${body.previous_risk_level} to ${body.current_risk_level}.`;
 			}
-			// --- END KEY CHANGE ---
 
 			const newMsg = {
 				text: displayText,
-				receivedTime: new Date().toLocaleTimeString(), // Time received by frontend
-				publishTime: parsedData.publishTime, // Original publish time from Pub/Sub
-				messageId: parsedData.messageId.substring(0, 8), // Shorten for display
+				receivedTime: new Date().toLocaleTimeString(),
+				publishTime: parsedData.publishTime,
+				messageId: parsedData.messageId.substring(0, 8),
 			};
 
 			setMessages((prevMessages) => {
 				const updated = [...prevMessages, newMsg];
-				// Sort messages by their Pub/Sub publish time
 				updated.sort((a, b) => new Date(a.publishTime).getTime() - new Date(b.publishTime).getTime());
 				return updated;
 			});
-		};
-
-		socket.onerror = (err) => {
-			console.error("WebSocket error:", err);
-			setStatus("Connection failed. Please check the backend and project ID.");
-			setError(
-				"Could not connect to the message stream. The topic might not exist or there could be a permissions issue.",
-			);
-		};
-
-		socket.onclose = () => {
-			setStatus("Disconnected.");
-		};
-
-		return () => {
-			// Check if the socket instance exists and is open before closing
-			if (socket && socket.readyState === WebSocket.OPEN) {
-				socket.close();
-				console.log("Cleaned up Message Stream WebSocket.");
-			}
-		};
-	}, [projectID]);
+		}
+	}, [latestMessage]);
 
 	useEffect(() => {
 		messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -134,8 +79,8 @@ function StreamingPage() {
 
 	const handleSendMessage = (e: FormEvent) => {
 		e.preventDefault();
-		if (newMessage.trim() && ws.current && ws.current.readyState === WebSocket.OPEN) {
-			ws.current.send(newMessage);
+		if (newMessage.trim() && ws && ws.readyState === WebSocket.OPEN) {
+			ws.send(newMessage);
 			setNewMessage("");
 		}
 	};
