@@ -123,16 +123,24 @@ func (s *FilterService) FilterAndConsolidate(ctx context.Context, dataDir string
 			// Importance Logic
 			importance := "Normal"
 			lowerType := strings.ToLower(serviceType)
-			if strings.Contains(lowerType, "cluster") ||
-				strings.Contains(lowerType, "firewall") ||
-				strings.Contains(lowerType, "vpc") ||
-				strings.Contains(lowerType, "sql") {
+
+			// Use exact matches to avoid including unwanted related resources.
+			if lowerType == "sqladmin.instance" || lowerType == "compute.instance" {
 				importance = "High"
 			}
 
 			lastActivity, isActive := activeResources[resName]
 
 			if importance == "High" || isActive {
+				// Add detailed logging to explain why a resource is being selected.
+				reason := ""
+				if importance == "High" {
+					reason = "High Importance"
+				} else {
+					reason = "Recent Activity"
+				}
+				log.Printf("Selecting resource '%s' (type: %s). Reason: %s.", resName, serviceType, reason)
+
 				if lastActivity == "" {
 					lastActivity = "Unknown (Always Important)"
 				}

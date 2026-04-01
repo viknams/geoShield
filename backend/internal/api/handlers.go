@@ -714,7 +714,7 @@ func (h *APIHandler) PlanTerraform(c *gin.Context) {
 			prefixPath := filepath.Join(config.FolderName, res.Type, res.Name)
 			initCmd := exec.CommandContext(ctx, "terraform", "init", "-no-color", fmt.Sprintf("-backend-config=bucket=%s", config.TerraformStateBucket), fmt.Sprintf("-backend-config=prefix=%s", prefixPath))
 			initCmd.Dir = path // Set working directory
-			initOutput, err := h.runCommandAndStreamStatus(initCmd, fmt.Sprintf("Init for %s: %s", displayType, res.Name))
+			initOutput, err := h.runCommandAndStreamStatus(initCmd, fmt.Sprintf("Resource [%d/%d] [%s]: ", i+1, len(config.Resources), res.Name), fmt.Sprintf("Init for %s: %s", displayType, res.Name))
 			combinedOutput += initOutput
 			if err != nil {
 				continue // Stop processing this resource if init fails
@@ -729,7 +729,7 @@ func (h *APIHandler) PlanTerraform(c *gin.Context) {
 			planFilePath := filepath.Join(path, "terraform.tfplan")
 			planCmd := exec.CommandContext(ctx, "terraform", "plan", "-no-color", "-out="+planFilePath)
 			planCmd.Dir = path // Set working directory
-			planOutput, err := h.runCommandAndStreamStatus(planCmd, fmt.Sprintf("Plan for %s: %s", displayType, res.Name))
+			planOutput, err := h.runCommandAndStreamStatus(planCmd, fmt.Sprintf("Resource [%d/%d] [%s]: ", i+1, len(config.Resources), res.Name), fmt.Sprintf("Plan for %s: %s", displayType, res.Name))
 			combinedOutput += planOutput
 			if err != nil {
 				finalPlanOutput += planOutput // Capture the plan error for the UI
@@ -850,7 +850,7 @@ func (h *APIHandler) ApplyTerraform(c *gin.Context) {
 			applyCmd := exec.CommandContext(ctx, "terraform", "apply", "-no-color", "-auto-approve", planFilePath)
 			applyCmd.Dir = path
 
-			output, err := h.runCommandAndStreamStatus(applyCmd, fmt.Sprintf("Apply for %s: %s", displayType, res.Name))
+			output, err := h.runCommandAndStreamStatus(applyCmd, fmt.Sprintf("Resource [%d/%d] [%s]: ", i+1, len(config.Resources), res.Name), fmt.Sprintf("Apply for %s: %s", displayType, res.Name))
 			combinedOutput += output
 			if err != nil {
 				log.Printf("-> Terraform apply failed for %s: %v", res.Name, err)
@@ -879,7 +879,7 @@ func (h *APIHandler) ApplyTerraform(c *gin.Context) {
 
 // runCommandAndStreamStatus executes a command, streams its stdout/stderr to the planStatus,
 // and returns the combined output as a string.
-func (h *APIHandler) runCommandAndStreamStatus(cmd *exec.Cmd, header string) (string, error) {
+func (h *APIHandler) runCommandAndStreamStatus(cmd *exec.Cmd, linePrefix string, header string) (string, error) {
 	// --- Cancellation Setup ---
 	// This makes the command the leader of a new process group.
 	// We can kill the entire group later, ensuring no child processes are left behind.
@@ -921,7 +921,7 @@ func (h *APIHandler) runCommandAndStreamStatus(cmd *exec.Cmd, header string) (st
 
 		// Update the shared status for the frontend to poll
 		h.mu.Lock()
-		h.planStatus = line
+		h.planStatus = linePrefix + line
 		h.mu.Unlock()
 	}
 
@@ -1241,14 +1241,14 @@ func (h *APIHandler) PlanDestroyTerraform(c *gin.Context) {
 				fmt.Sprintf("-backend-config=prefix=%s", prefix),
 			)
 			initCmd.Dir = path
-			if _, err := h.runCommandAndStreamStatus(initCmd, fmt.Sprintf("Init for %s", res.Name)); err != nil {
+			if _, err := h.runCommandAndStreamStatus(initCmd, fmt.Sprintf("Resource [%d/%d] [%s]: ", i+1, len(config.Resources), res.Name), fmt.Sprintf("Init for %s", res.Name)); err != nil {
 				continue
 			}
 
 			planFilePath := filepath.Join(path, "terraform.tfplan")
 			planCmd := exec.CommandContext(ctx, "terraform", "plan", "-no-color", "-destroy", "-out="+planFilePath)
 			planCmd.Dir = path
-			if planOutput, err := h.runCommandAndStreamStatus(planCmd, fmt.Sprintf("Destroy Plan for %s", res.Name)); err != nil {
+			if planOutput, err := h.runCommandAndStreamStatus(planCmd, fmt.Sprintf("Resource [%d/%d] [%s]: ", i+1, len(config.Resources), res.Name), fmt.Sprintf("Destroy Plan for %s", res.Name)); err != nil {
 				finalPlanOutput += planOutput
 				continue
 			}
@@ -1370,7 +1370,7 @@ func (h *APIHandler) DestroyTerraform(c *gin.Context) {
 				fmt.Sprintf("-backend-config=prefix=%s", prefix),
 			)
 			initCmd.Dir = path
-			if initOutput, err := h.runCommandAndStreamStatus(initCmd, fmt.Sprintf("Init for destroy of %s", res.Name)); err != nil {
+			if initOutput, err := h.runCommandAndStreamStatus(initCmd, fmt.Sprintf("Resource [%d/%d] [%s]: ", i+1, len(resourcesToProcess), res.Name), fmt.Sprintf("Init for destroy of %s", res.Name)); err != nil {
 				log.Printf("-> Terraform init failed during destroy for %s: %v", res.Name, err)
 				combinedOutput += fmt.Sprintf("=== Init Error for %s ===\n%s\n", res.Name, initOutput)
 				continue
@@ -1378,7 +1378,7 @@ func (h *APIHandler) DestroyTerraform(c *gin.Context) {
 
 			destroyCmd := exec.CommandContext(ctx, "terraform", "destroy", "-auto-approve", "-no-color")
 			destroyCmd.Dir = path
-			output, err := h.runCommandAndStreamStatus(destroyCmd, fmt.Sprintf("Destroying %s", res.Name))
+			output, err := h.runCommandAndStreamStatus(destroyCmd, fmt.Sprintf("Resource [%d/%d] [%s]: ", i+1, len(resourcesToProcess), res.Name), fmt.Sprintf("Destroying %s", res.Name))
 
 			combinedOutput += output
 			if err != nil {
