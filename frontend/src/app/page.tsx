@@ -1208,9 +1208,33 @@ function HomePageClient() {
 											className="bg-emerald-50 px-6 py-3 border-b border-emerald-100 flex justify-between items-center cursor-pointer hover:bg-emerald-100/50 transition-colors"
 											onClick={() => toggleSection(sectionKey)}
 										>
-											<h3 className="text-xs font-black text-emerald-700 uppercase tracking-widest">
-												{service}
-											</h3>
+											<div className="flex items-center gap-4">
+												<input
+													type="checkbox"
+													className="h-4 w-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500"
+													checked={
+														// Checked if all resources in this service are selected
+														(resourcesToPlan[service]?.length || 0) - 1 === rows.length - 1 && rows.length > 1
+													}
+													onChange={(e) => {
+														e.stopPropagation(); // Prevent the section from toggling
+														setResourcesToPlan((prev) => {
+															const updated = { ...prev };
+															if (e.target.checked) {
+																// Select all resources for this service
+																updated[service] = rows;
+															} else {
+																// Deselect all for this service
+																delete updated[service];
+															}
+															return updated;
+														});
+													}}
+												/>
+												<h3 className="text-xs font-black text-emerald-700 uppercase tracking-widest">
+													{service}
+												</h3>
+											</div>
 											<div className="flex items-center gap-3">
 												<button
 													onClick={(e) => {
@@ -1258,30 +1282,7 @@ function HomePageClient() {
 												<table className="w-full text-left text-xs">
 													<thead className="bg-white text-slate-400 border-b border-slate-50">
 														<tr>
-															<th className="px-4 py-4">
-																<input
-																	type="checkbox"
-																	className="h-4 w-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500"
-																	checked={
-																		// Checked if all resources in this service are selected
-																		(resourcesToPlan[service]?.length || 0) - 1 === rows.length - 1 && rows.length > 1
-																	}
-																	onChange={(e) => {
-																		setResourcesToPlan((prev) => {
-																			const updated = { ...prev };
-																			if (e.target.checked) {
-																				// Select all resources for this service
-																				updated[service] = rows;
-																			} else {
-																				// Deselect all for this service
-																				delete updated[service];
-																			}
-																			return updated;
-																		});
-																	}}
-																/>
-															</th>
-															<th className="px-6 py-4 font-bold uppercase tracking-wider text-red-500">Risk</th>
+															<th className="px-4 py-4"></th>
 															{rows[0]?.map((col, i) => {
 																const isEditable =
 																	col === "NewRegion" || col === "NewSubnet";
@@ -1303,36 +1304,6 @@ function HomePageClient() {
 																key={i}
 																className="hover:bg-emerald-50/50 transition-colors"
 															>
-																<td className="px-4 py-4">
-																	<input
-																		type="checkbox"
-																		className="h-4 w-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500"
-																		checked={
-																			resourcesToPlan[service]?.some(
-																				(r) => r[0] === row[0]
-																			) ?? false
-																		}
-																		onChange={(e) => {
-																			setResourcesToPlan((prev) => {
-																				const updated = { ...prev };
-																				if (e.target.checked) {
-																					if (!updated[service]) {
-																						updated[service] = [rows[0]]; // Add header
-																					}
-																					updated[service] = [...updated[service], row];
-																				} else {
-																					updated[service] = updated[service].filter(
-																						(r) => r[0] !== row[0]
-																					);
-																					if (updated[service].length <= 1) {
-																						delete updated[service];
-																					}
-																				}
-																				return updated;
-																			});
-																		}}
-																	/>
-																</td>
 																<td className="px-6 py-4">
 																	{(() => {
 																		const region = row[rows[0]?.indexOf("Region")];
@@ -1340,7 +1311,31 @@ function HomePageClient() {
 																		if (risk) {
 																			return <span className={`font-bold ${getRiskColorClass(risk.current)}`}>{risk.current} &larr; <span className={getRiskColorClass(risk.previous)}>{risk.previous}</span></span>;
 																		}
-																		return <span className="text-slate-400">-</span>;
+																		return (
+																			<input
+																				type="checkbox"
+																				className="h-4 w-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500"
+																				checked={
+																					resourcesToPlan[service]?.some(
+																						(r) => r[0] === row[0]
+																					) ?? false
+																				}
+																				onChange={(e) => {
+																					setResourcesToPlan((prev) => {
+																						const updated = { ...prev };
+																						if (e.target.checked) {
+																							if (!updated[service]) {
+																								updated[service] = [rows[0]]; // Add header
+																							}
+																							updated[service] = [...updated[service], row];
+																						} else {
+																							updated[service] = updated[service].filter((r) => r[0] !== row[0]);
+																							if (updated[service].length <= 1) delete updated[service];
+																						}
+																						return updated;
+																					});
+																				}}
+																			/>);
 																	})()}
 																</td>
 
