@@ -35,7 +35,9 @@ func main() {
 	absDataDir := filepath.Join(cwd, *dataDir)
 
 	log.Printf("Starting filtering and consolidation for project: %s", *projectID)
-	if err := svc.FilterAndConsolidate(ctx, absDataDir, func(status string) {
+	// if err := svc.FilterAndConsolidate(ctx, absDataDir, func(status string) {
+	if err := svc.FilterAndConsolidate(ctx, absDataDir, absDataDir, func(status string) {
+
 		log.Println(status)
 	}); err != nil {
 		log.Fatalf("filtering failed: %v", err)

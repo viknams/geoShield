@@ -36,8 +36,9 @@ function StreamingPage() {
 	}, [searchParams]);
 
 	useEffect(() => {
-		if (projectID) {
-			connect(projectID);
+		const apiKey = sessionStorage.getItem("geoShieldApiKey");
+		if (projectID && apiKey) {
+			connect(projectID, apiKey);
 		}
 	}, [projectID, connect]);
 

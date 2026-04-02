@@ -2,9 +2,11 @@
 
 import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 
+type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
+
 interface WebSocketContextType {
   ws: WebSocket | null;
-  connect: (projectId: string) => void;
+  connect: (projectId: string, apiKey: string) => void;
   disconnect: () => void;
   latestMessage: any;
 }
@@ -22,44 +24,42 @@ export const useWebSocket = () => {
 export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [ws, setWs] = useState<WebSocket | null>(null);
   const [latestMessage, setLatestMessage] = useState<any>(null);
-  const projectIdRef = useRef<string | null>(null);
+  const [status, setStatus] = useState<ConnectionStatus>('disconnected');
 
-  const connect = (projectId: string) => {
-    if (ws && projectId === projectIdRef.current) {
-      return; // Already connected to the same project
-    }
-
+  const connect = (projectId: string, apiKey: string) => {
     if (ws) {
-      ws.close(); // Close existing connection if project changes
+      return; // Already connected or connecting
     }
 
-    projectIdRef.current = projectId;
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
-    const wsUrl = `${apiUrl.replace(/^http/, 'ws')}/api/gcp/stream-pubsub-ws?project=${projectId}`;
+    setStatus('connecting');
+    const wsUrl = `${process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8080"}/api/gcp/stream-pubsub-ws?project=${projectId}&token=${apiKey}`;
 
     console.log('Connecting to WebSocket:', wsUrl);
     const newWs = new WebSocket(wsUrl);
 
     newWs.onopen = () => {
       console.log('WebSocket connected');
+      setStatus('connected');
       setWs(newWs);
     };
 
     newWs.onmessage = (event) => {
       const data = JSON.parse(event.data);
-       if (data.attributes) {
-           setLatestMessage(data);
-       }
+      if (data.attributes) {
+        setLatestMessage(data);
+      }
     };
 
     newWs.onclose = () => {
       console.log('WebSocket disconnected');
+      setStatus('disconnected');
       setWs(null);
     };
 
     newWs.onerror = (error) => {
       console.error('WebSocket error:', error);
-      // No need to setWs(null) here, onclose will handle it
+      setStatus('error');
+      // onclose will handle cleanup
     };
   };
 
