@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, Suspense } from "react";
+import { useState, useEffect, useRef, Suspense, useCallback } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useWebSocket } from "@/contexts/WebSocketContext";
@@ -50,6 +50,23 @@ export default function HomePageWrapper() {
 	);
 }
 
+// Custom hook for debouncing
+function useDebounce<T>(value: T, delay: number): T {
+	const [debouncedValue, setDebouncedValue] = useState<T>(value);
+
+	useEffect(() => {
+		const handler = setTimeout(() => {
+			setDebouncedValue(value);
+		}, delay);
+
+		return () => {
+			clearTimeout(handler);
+		};
+	}, [value, delay]);
+
+	return debouncedValue;
+}
+
 function HomePageClient() {
 	const searchParams = useSearchParams();
 	const [projectID, setProjectID] = useState("");
@@ -90,8 +107,14 @@ function HomePageClient() {
 	});
 	const [isLatestRiskLoading, setIsLatestRiskLoading] = useState(false);
 	const [riskLevels, setRiskLevels] = useState<Record<string, { current: string; previous: string }>>({});
-	const { connect, latestMessage: webSocketLatestMessage } = useWebSocket();
-	const [hasMounted, setHasMounted] = useState(false);
+	const { connect, disconnect, ws, latestMessage: webSocketLatestMessage } = useWebSocket();
+	const [hasMounted, setHasMounted] = useState(false); // For preventing hydration errors
+	const [apiKey, setApiKey] = useState<string>("");
+	const [discoveryMetadata, setDiscoveryMetadata] = useState<{
+		last_run_at: string;
+		user_id: string;
+		status: string;
+	} | null>(null);
 
 
 	const [bulkRegion, setBulkRegion] = useState("");
@@ -102,50 +125,53 @@ function HomePageClient() {
 	const addResourceRef = useRef<HTMLDivElement>(null);
 	const abortControllerRef = useRef<AbortController | null>(null);
 
+	// Load API key from session storage on mount
+	useEffect(() => {
+		const storedApiKey = sessionStorage.getItem("geoShieldApiKey");
+		if (storedApiKey) {
+			setApiKey(storedApiKey);
+		}
+	}, []);
+
+	// Save API key to session storage whenever it changes
+	const handleApiKeyChange = (key: string) => {
+		setApiKey(key);
+		sessionStorage.setItem("geoShieldApiKey", key);
+	};
+
 	const toggleSection = (sectionKey: string) => {
-		setExpandedSections((prev) => ({ ...prev, [sectionKey]: !prev[sectionKey] }));
+		setExpandedSections((prev) => ({
+			...prev,
+			[sectionKey]: !prev[sectionKey],
+		}));
 	};
 
 	const fetchResources = async () => {
 		try {
-			const res = await fetch(
-				`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/resources?project=${projectID}`,
-			);
-			const data = await res.json();
-			setResources(data);
+			const data = await apiCall("resources", "GET");
+			setResources(data.resources || {});
+			setDiscoveryMetadata(data.metadata || null);
 		} catch (e) {
 			console.error("Failed to fetch resources", e);
+			setResources({}); // Clear on failure
 		}
 	};
 
 	const fetchActiveResources = async () => {
 		try {
-			const res = await fetch(
-				`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/resources/active?project=${projectID}`,
-			);
-			const data = await res.json();
-			if (data && !data.error) {
-				setActiveResources(data);
-				// Ensure NewRegion and NewSubnet columns exist
-				for (const key in data) {
-					const rows = data[key];
-					if (rows.length > 0) {
-						const header = rows[0];
-						if (!header.includes("NewRegion")) {
-							header.push("NewRegion");
-							for (let i = 1; i < rows.length; i++) rows[i].push("");
-						}
-						if (!header.includes("NewSubnet")) {
-							header.push("NewSubnet");
-							for (let i = 1; i < rows.length; i++) rows[i].push("");
-						}
-					}
-				}
+			const data = await apiCall("resources/active", "GET");
+			if (data && data.active_resources) {
+				const resources = data.active_resources;
+				// The logic to add NewRegion/NewSubnet columns can be simplified or ensured by the backend
+				setActiveResources(resources);
+				// Restore the user's previous selections
+				setResourcesToPlan(data.resources_to_plan || {});
 			} else {
 				setActiveResources({});
 			}
 		} catch (e) {
 			console.error("Failed to fetch active resources", e);
+			setActiveResources({}); // Clear on failure
 		}
 	};
 
@@ -313,18 +339,27 @@ function HomePageClient() {
 		setBulkSubnet("");
 	};
 
-	const apiCall = async (endpoint: string, method: string, bodyData?: any, signal?: AbortSignal) => {
+	const apiCall = async (endpoint: string, method: string, bodyData?: any, signal?: AbortSignal, queryParams: string = "") => {
 		try {
-			const options: RequestInit = { method, signal };
-			if (bodyData) {
-				options.headers = { "Content-Type": "application/json" };
-				options.body = JSON.stringify(bodyData);
+			if (!apiKey) {
+				throw new Error("API Key is not set. Please enter your API Key.");
 			}
+			const options: RequestInit = { method, signal };
+			options.headers = {
+				"Content-Type": "application/json",
+				"Authorization": `Bearer ${apiKey}`, 
+			};
+			if (bodyData) options.body = JSON.stringify(bodyData);
 
 			const res = await fetch(
-				`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/${endpoint}?project=${projectID}`,
+				`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/${endpoint}?project=${projectID}${queryParams}`,
 				options,
 			);
+
+			// Handle successful responses that don't have a body (e.g., 204 No Content)
+			if (res.status === 204) {
+				return null; // Or return a success indicator if needed
+			}
 
 			const data = await res.json();
 			if (data.error) throw new Error(data.error);
@@ -335,6 +370,10 @@ function HomePageClient() {
 			if (err.name === "AbortError") {
 				console.log("Fetch aborted by user.");
 				setStatus("Operation cancelled.");
+				// Don't re-throw, as this is an expected user action, not a failure.
+				// We return a resolved promise with an indicator.
+				// The caller can decide how to handle it.
+				return Promise.resolve({ aborted: true });
 			} else {
 				setStatus(`Error: ${err.message}`);
 			}
@@ -371,6 +410,26 @@ function HomePageClient() {
 		};
 	}, [addResourceRef]);
 
+	const logToServer = useCallback((message: string, level: "info" | "warn" | "error" = "info") => {
+		// Log to browser console for immediate debugging
+		console.log(message);
+
+		// Don't send log if api key or project id is not set, to avoid spamming errors
+		if (!apiKey || !projectID) {
+			return;
+		}
+
+		// Send log to backend without waiting for a response (fire and forget)
+		fetch(
+			`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/log?project=${projectID}`,
+			{
+				method: 'POST',
+				headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
+				body: JSON.stringify({ message, level }),
+			}
+		).catch(err => console.error("Failed to send log to server:", err)); // Log failure to console
+	}, [apiKey, projectID]);
+
 	// Effect to set mounted state. This prevents hydration errors with time formatting.
 	useEffect(() => {
 		setHasMounted(true);
@@ -378,6 +437,9 @@ function HomePageClient() {
 
 	// Helper function to get Tailwind CSS class for risk level
 	const getRiskColorClass = (riskLevel: string) => {
+		if (!riskLevel) {
+			return "text-slate-500";
+		}
 		switch (riskLevel) {
 			case "R0":
 			case "R1":
@@ -423,11 +485,15 @@ function HomePageClient() {
 				}
 
 				try {
-					const res = await fetch(statusUrl);
+					const res = await fetch(statusUrl, {
+						headers: {
+							"Authorization": `Bearer ${apiKey}`,
+						},
+					});
 					const data = await res.json();
-					setStatus(data.status);
+					if (data && data.status) setStatus(data.status);
 
-					if (data.status.startsWith(completionPrefix)) {
+					if (data && typeof data.status === 'string' && data.status.startsWith(completionPrefix)) {
 						clearInterval(intervalId);
 						// Resolve with the final status so the caller can use it
 						resolve(data.status);
@@ -449,6 +515,7 @@ function HomePageClient() {
 	// --- AUTOMATION ENGINE ---
 	const runAutomationSequence = async (riskLevel: string) => {
 		if (!projectID || isAutomationRunning) return;
+		logToServer(`[LOG] AUTOMATION WORKFLOW: Starting for Risk Level: ${riskLevel}`);
 		setIsAutomationRunning(true);
 		setLoading(true);
 		abortControllerRef.current = new AbortController(); // New controller for automation
@@ -547,6 +614,7 @@ function HomePageClient() {
 
 	const continueAutomation = async (riskLevel: string) => {
 		if (!isAutomationRunning) return;
+		logToServer(`[LOG] AUTOMATION WORKFLOW: Continuing automation for Risk Level: ${riskLevel}`);
 		setLoading(true);
 		try {
 			// This function is called after the user confirms the selection in the 'active' view,
@@ -576,13 +644,14 @@ function HomePageClient() {
 	}
 
 	// Generic handler for manual button clicks
-	const handleManualAction = async (endpoint: string, method: string, bodyData?: any, poll: boolean = false, completionPrefix: string = "", timeout: number = 0) => {
+	const handleManualAction = async (endpoint: string, method: string, bodyData?: any, poll: boolean = false, completionPrefix: string = "", timeout: number = 0, queryParams: string = "") => {
+		logToServer(`[LOG] MANUAL WORKFLOW: Executing endpoint: ${endpoint}`);
 		setLoading(true);
 		abortControllerRef.current = new AbortController();
 		setStatus(`Executing ${endpoint}...`);
 		try {
 			// Step 1: Make the initial API call
-			await apiCall(endpoint, method, bodyData, abortControllerRef.current.signal);
+			await apiCall(endpoint, method, bodyData, abortControllerRef.current.signal, queryParams);
 
 			// Step 2: Poll for completion if required
 			let finalStatus = "";
@@ -633,9 +702,13 @@ function HomePageClient() {
 				}
 			}
 
-		} catch (error) {
+		} catch (error: any) {
 			// Error logging is handled in apiCall and pollStatus, this just catches to prevent crash
-			console.error(`Manual action ${endpoint} failed:`, error);
+			// Only log errors that are not due to user cancellation.
+			if (error.message !== "Operation cancelled by user.") {
+				console.error(`Manual action ${endpoint} failed:`, error);
+				setStatus(`Error: ${error.message}`);
+			}
 		} finally {
 			// Only turn off loading if not in a chained automation step that handles its own loading.
 			const isChainedPlan = isAutomationRunning && endpoint === 'plan' && latestRiskMessage?.currentRiskLevel && latestRiskMessage.currentRiskLevel >= "R3";
@@ -655,6 +728,9 @@ function HomePageClient() {
 		try {
 			// Send a request to the backend to terminate the running process.
 			await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/cancel`, {
+				headers: {
+					"Authorization": `Bearer ${apiKey}`,
+				},
 				method: 'POST',
 			});
 			// The backend will kill the process, and the polling on the frontend
@@ -677,11 +753,19 @@ function HomePageClient() {
 		// We only want this to run once on load when a project is in the URL
 	}, [searchParams]);
 
+	// Debounce the resourcesToPlan state to avoid saving on every single click
+	const debouncedResourcesToPlan = useDebounce(resourcesToPlan, 1000); // 1-second delay
+
+	// Effect to automatically save user's selections to the backend
 	useEffect(() => {
-		if (projectID) {
-			connect(projectID);
+		// Don't save if the object is empty or if the API key isn't set
+		if (Object.keys(debouncedResourcesToPlan).length === 0 || !apiKey) {
+			return;
 		}
-	}, [projectID, connect]);
+
+		console.log("Debounced change detected, saving resource selections to backend...");
+		apiCall("resources/active/save", "POST", { resources: debouncedResourcesToPlan });
+	}, [debouncedResourcesToPlan, apiKey]);
 
 	useEffect(() => {
 		if (webSocketLatestMessage) {
@@ -794,14 +878,43 @@ function HomePageClient() {
 							</p>
 						</div>
 					</div>
-					<div className="w-full md:flex-1 md:max-w-md">
-						<input
-							type="text"
-							value={projectID}
-							onChange={(e) => setProjectID(e.target.value)}
-							placeholder="Enter your GCP Project ID..."
-							className="w-full bg-white border-2 border-slate-200 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all font-mono text-blue-700"
-						/>
+					<div className="w-full md:flex-1 md:max-w-lg flex flex-col md:flex-row gap-4 items-end">
+						<div className="w-full">
+							<label htmlFor="projectID" className="text-xs font-bold text-slate-500 uppercase tracking-wider ml-1">Project ID</label>
+							<input
+								id="projectID"
+								type="text"
+								value={projectID}
+								onChange={(e) => setProjectID(e.target.value)}
+								placeholder="Enter your Project ID..."
+								className="w-full mt-1 bg-white border-2 border-slate-200 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all font-mono text-blue-700"
+							/>
+						</div>
+						<div className="w-full">
+							<label htmlFor="apiKey" className="text-xs font-bold text-slate-500 uppercase tracking-wider ml-1">API Key</label>
+							<input
+								id="apiKey"
+								type="password"
+								value={apiKey}
+								onChange={(e) => handleApiKeyChange(e.target.value)}
+								placeholder="Enter your API Key..."
+								className="w-full mt-1 bg-white border-2 border-slate-200 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all font-mono text-blue-700"
+							/>
+						</div>
+						<button
+							onClick={() => {
+								if (ws) {
+									disconnect();
+								} else {
+									connect(projectID, apiKey);
+								}
+							}}
+							disabled={!projectID || !apiKey}
+							className={`px-4 py-3 rounded-xl font-bold text-white transition-all flex-shrink-0 flex items-center gap-2 ${ws ? "bg-red-500 hover:bg-red-600" : "bg-blue-600 hover:bg-blue-700"} disabled:opacity-50`}
+						>
+							<span className={`w-2 h-2 rounded-full ${ws ? "bg-green-400 animate-pulse" : "bg-slate-400"}`} />
+							{ws ? "Disconnect" : "Connect"}
+						</button>
 					</div>
 				</header>
 
@@ -945,7 +1058,7 @@ function HomePageClient() {
 							</span>
 						</button>
 						<button
-							onClick={() => handleManualAction("discover", "POST", undefined, true, "Discovery completed. CSV files updated.", 5 * 60 * 1000)}
+							onClick={() => handleManualAction("discover", "POST", undefined, true, "Discovery completed", 5 * 60 * 1000)}
 							disabled={loading || isAutomationRunning}
 							className="group relative overflow-hidden bg-blue-600 hover:bg-blue-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-blue-200 active:scale-95 disabled:opacity-50"
 						>
@@ -967,7 +1080,7 @@ function HomePageClient() {
 							</span>
 						</button>
 						<button
-							onClick={() => handleManualAction("filter", "POST", undefined, true, "Filter process completed.", 5 * 60 * 1000)}
+							onClick={() => handleManualAction("filter", "POST", undefined, true, "Filter process completed", 5 * 60 * 1000)}
 							disabled={loading || isAutomationRunning}
 							className="group relative overflow-hidden bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-emerald-200 active:scale-95 disabled:opacity-50"
 						>
@@ -989,7 +1102,7 @@ function HomePageClient() {
 						</button>
 						<button
 							onClick={() => handleManualAction("plan", "POST", { resources: resourcesToPlan, workspaceId: "" }, true, "COMPLETED::", 15 * 60 * 1000)}
-							disabled={loading || isAutomationRunning}
+							disabled={loading || isAutomationRunning || Object.keys(resourcesToPlan).length === 0}
 							className="group relative overflow-hidden bg-purple-600 hover:bg-purple-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-purple-200 active:scale-95 disabled:opacity-50"
 						>
 							<span className="relative z-10 flex items-center justify-center gap-2">
@@ -1083,11 +1196,29 @@ function HomePageClient() {
 					{/* DISCOVERED VIEW */}
 					{viewMode === "discovered" && (
 						<div className="space-y-6 animate-in slide-in-from-bottom-4 duration-300">
-							<div className="px-2">
+							<div className="px-2 flex items-center justify-between">
 								<h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
 									<span className="w-1.5 h-6 bg-blue-500 rounded-full" />
 									Discovery Results
 								</h2>
+								{discoveryMetadata && (
+									<p className="text-xs text-slate-400 font-medium">
+										Last updated by <span className="font-bold text-slate-500">{discoveryMetadata.user_id}</span> on {new Date(discoveryMetadata.last_run_at).toLocaleString()}
+									</p>
+								)}
+								<button
+									onClick={() => handleManualAction("discover", "POST", undefined, true, "Discovery completed", 5 * 60 * 1000, "&force_refresh=true")}
+									disabled={loading || isAutomationRunning}
+									className="group relative overflow-hidden bg-sky-600 hover:bg-sky-700 text-white px-4 py-2 rounded-lg font-bold transition-all hover:shadow-lg hover:shadow-sky-200 active:scale-95 disabled:opacity-50 text-xs"
+									title="Force a new discovery run, ignoring any cached data."
+								>
+									<span className="relative z-10 flex items-center justify-center gap-2">
+										<svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+											<path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h5m-5-2h14a2 2 0 012 2v4a2 2 0 01-2 2H9m-5-4v5h5m-5-2h14a2 2 0 002-2V7a2 2 0 00-2-2H5" />
+										</svg>
+										Force Refresh
+									</span>
+								</button>
 							</div>
 							{Object.entries(resources).map(([service, rows]) => {
 								const sectionKey = `discovered_${service}`;
@@ -1193,8 +1324,21 @@ function HomePageClient() {
 									<h2 className="text-lg font-bold text-slate-800">
 										Active Resources
 									</h2>
+									<button
+										onClick={() => handleManualAction("filter", "POST", undefined, true, "Filter process completed.", 5 * 60 * 1000, "&force_refresh=true")}
+										disabled={loading || isAutomationRunning}
+										className="group relative overflow-hidden bg-sky-600 hover:bg-sky-700 text-white px-6 py-2 rounded-lg font-bold transition-all hover:shadow-lg hover:shadow-sky-200 active:scale-95 disabled:opacity-50 text-xs whitespace-nowrap"
+										title="Force a new filter run, ignoring any cached data."
+									>
+										<span className="relative z-10 flex items-center justify-center gap-2">
+											<svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+												<path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h5m-5-2h14a2 2 0 012 2v4a2 2 0 01-2 2H9m-5-4v5h5m-5-2h14a2 2 0 002-2V7a2 2 0 00-2-2H5" />
+											</svg>
+											Force Refresh
+										</span>
+									</button>
 								</div>
-								<div className="w-full grid grid-cols-1 lg:grid-cols-3 gap-x-6 gap-y-4">
+								<div className="w-full flex flex-col md:flex-row md:items-end gap-4 border-t md:border-t-0 md:border-l border-slate-200 pt-4 md:pt-0 md:pl-6">
 									{/* --- Section 1: Add Resource --- */}
 									<div className="space-y-2">
 										<label className="text-xs font-bold text-slate-500 uppercase tracking-wider ml-1">
@@ -1257,7 +1401,7 @@ function HomePageClient() {
 										<label className="text-xs font-bold text-slate-500 uppercase tracking-wider ml-1">
 											2. Bulk Set Properties
 										</label>
-										<div className="flex flex-col md:flex-row gap-2">
+										<div className="flex items-center gap-2">
 											<select
 												className="bg-white border border-slate-200 text-xs px-3 py-2 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 w-full sm:w-1/2"
 												value={bulkRegion}
@@ -1286,14 +1430,11 @@ function HomePageClient() {
 									</div>
 
 									{/* --- Section 3: Apply Bulk Actions --- */}
-									<div className="space-y-2 flex flex-col justify-end">
-										<label className="text-xs font-bold text-slate-500 uppercase tracking-wider ml-1 lg:invisible">
-											3. Apply
-										</label> 
+									<div className="flex-shrink-0">
 										<button
 											onClick={applyBulkUpdate}
 											disabled={!bulkRegion && !bulkSubnet}
-											className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-2 rounded-lg text-xs font-bold transition-all disabled:opacity-50 w-full"
+											className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-xs font-bold transition-all disabled:opacity-50"
 										>
 											Apply to All 
 										</button>

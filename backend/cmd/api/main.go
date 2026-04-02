@@ -1,9 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
+
+	"time"
 
 	"example.com/geoShield/backend/internal/api"
 	"example.com/geoShield/backend/internal/generator"
@@ -25,6 +29,29 @@ func main() {
 	}
 
 	_ = godotenv.Load(filepath.Join(rootDir, ".env"))
+
+	// Load users from users.json
+	usersFile, err := os.ReadFile(filepath.Join(rootDir, "users.json"))
+	if err != nil {
+		log.Fatalf("failed to read users.json: %v", err)
+	}
+	var users map[string]string
+	if err := json.Unmarshal(usersFile, &users); err != nil {
+		log.Fatalf("failed to parse users.json: %v", err)
+	}
+	log.Printf("Loaded %d users from users.json", len(users))
+
+	cacheHours, err := strconv.Atoi(os.Getenv("DISCOVERY_CACHE_DURATION_HOURS"))
+	if err != nil || cacheHours <= 0 {
+		cacheHours = 240 // Default to 10 days (240 hours)
+	}
+	log.Printf("Discovery cache duration set to %d hours.", cacheHours)
+
+	filterCacheHours, err := strconv.Atoi(os.Getenv("FILTER_CACHE_DURATION_HOURS"))
+	if err != nil || filterCacheHours <= 0 {
+		filterCacheHours = 72 // Default to 3 days
+	}
+	log.Printf("Filter cache duration set to %d hours.", filterCacheHours)
 
 	h := &api.APIHandler{
 		DataDir:                   filepath.Join(rootDir, os.Getenv("DATA_DIR_GCP"), os.Getenv("GCP_PROJECT")),
@@ -57,6 +84,9 @@ func main() {
 		DefaultSQLDBVersion:     os.Getenv("DEFAULT_SQL_DB_VERSION"),
 		DefaultSQLTier:          os.Getenv("DEFAULT_SQL_TIER"),
 		DefaultSQLNetwork:       os.Getenv("DEFAULT_SQL_NETWORK"),
+		FilterCacheDuration:     time.Duration(filterCacheHours) * time.Hour,
+		DiscoveryCacheDuration:  time.Duration(cacheHours) * time.Hour,
+		Users:                   users,
 	}
 
 	// Log authentication source
@@ -71,38 +101,52 @@ func main() {
 	}
 
 	r := gin.Default()
-	r.Use(cors.Default())
+	// Use a more specific CORS configuration to allow the Authorization header
+	config := cors.DefaultConfig()
+	config.AllowAllOrigins = true
+	config.AllowHeaders = append(config.AllowHeaders, "Authorization")
+	r.Use(cors.New(config))
 
-	// Authentication
-	r.POST("/api/gcp/auth", h.AuthGCP)
-	r.GET("/api/gcp/auth/status", h.GetAuthStatus)
+	// Group API routes and apply authentication middleware
+	v1 := r.Group("/api/gcp")
+	v1.Use(h.AuthMiddleware())
+	{
+		// Authentication
+		v1.POST("/auth", h.AuthGCP)
+		v1.GET("/auth/status", h.GetAuthStatus)
 
-	// Discovery and Filtering
-	r.POST("/api/gcp/discover", h.DiscoverGCP)
-	r.GET("/api/gcp/discover/status", h.GetDiscoveryStatus)
-	r.GET("/api/gcp/resources", h.ListResources)
-	r.GET("/api/gcp/resources/active", h.ListActiveResources)
-	r.GET("/api/gcp/filter/status", h.GetFilterStatus)
-	r.POST("/api/gcp/filter", h.FilterGCP)
+		// Discovery and Filtering
+		v1.POST("/discover", h.DiscoverGCP)
+		v1.GET("/discover/status", h.GetDiscoveryStatus)
+		v1.GET("/resources", h.ListResources)
+		v1.GET("/resources/active", h.ListActiveResources)
+		v1.GET("/filter/status", h.GetFilterStatus)
+		v1.POST("/filter", h.FilterGCP)
 
-	// Terraform Plan & Apply
-	r.GET("/api/gcp/plan/status", h.GetPlanStatus)
-	r.POST("/api/gcp/plan", h.PlanTerraform)
-	r.POST("/api/gcp/apply", h.ApplyTerraform)
-	r.POST("/api/gcp/cancel", h.CancelOperation) // Add the new cancel route
+		// Terraform Plan & Apply
+		v1.GET("/plan/status", h.GetPlanStatus)
+		v1.POST("/plan", h.PlanTerraform)
+		v1.POST("/apply", h.ApplyTerraform)
+		v1.POST("/cancel", h.CancelOperation)
 
-	// Terraform Destroy
-	r.GET("/api/gcp/managed-resources", h.ListManagedResources) // Renamed from /plan-destroy in some versions
-	r.POST("/api/gcp/destroy/plan", h.PlanDestroyTerraform)
-	r.POST("/api/gcp/destroy", h.DestroyTerraform)
+		// Terraform Destroy
+		v1.GET("/managed-resources", h.ListManagedResources)
+		v1.POST("/destroy/plan", h.PlanDestroyTerraform)
+		v1.POST("/destroy", h.DestroyTerraform)
 
-	// Pub/Sub Streaming
-	r.GET("/api/gcp/stream-pubsub-ws", h.StreamPubSubMessagesWS)
-	// r.GET("/api/gcp/latest-pubsub-message", h.GetLatestPubSubMessage)
+		// Pub/Sub Streaming (Note: WebSocket upgrade might not work with all middleware)
+		v1.GET("/stream-pubsub-ws", h.StreamPubSubMessagesWS)
 
-	// Add these two new routes for the migration endpoint
-	r.POST("/api/gcp/migrate", h.AppMigration)
-	r.GET("/api/gcp/migrate/status", h.GetMigrationStatus)
+		// Migration
+		v1.POST("/migrate", h.AppMigration)
+		v1.GET("/migrate/status", h.GetMigrationStatus)
+
+		// Client-side logging
+		v1.POST("/log", h.LogFrontendMessage)
+	}
+	// This endpoint needs to be outside the auth group if it's part of the initial page load before API key is entered.
+	// For now, let's keep it inside and ensure API key is always present.
+	r.POST("/api/gcp/resources/active/save", h.AuthMiddleware(), h.SaveActiveResourcesSelections)
 
 	port := os.Getenv("PORT")
 	if port == "" {

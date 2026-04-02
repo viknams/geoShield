@@ -63,6 +63,9 @@ type APIHandler struct {
 	DefaultSQLDBVersion     string
 	DefaultSQLTier          string
 	DefaultSQLNetwork       string
+	FilterCacheDuration     time.Duration
+	DiscoveryCacheDuration  time.Duration
+	Users                   map[string]string // Map of API Key -> UserID
 
 	// Track auth status
 	mu              sync.RWMutex
@@ -76,6 +79,44 @@ type APIHandler struct {
 	runningCmdLock sync.Mutex
 	runningCmd     *exec.Cmd
 	cancelFunc     context.CancelFunc
+}
+
+// AuthMiddleware validates the API key from the header and sets the userID in the context.
+func (h *APIHandler) AuthMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// For WebSocket connections, auth token is passed as a query parameter
+		// because headers cannot be set on the WebSocket constructor in browsers.
+		if c.Request.URL.Path == "/api/gcp/stream-pubsub-ws" {
+			apiKey := c.Query("token")
+			if userID, ok := h.Users[apiKey]; ok {
+				c.Set("userID", userID)
+				c.Next()
+				return
+			}
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid or missing token for WebSocket connection"})
+			return
+		}
+
+		authHeader := c.GetHeader("Authorization")
+		if authHeader == "" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Authorization header is required"})
+			return
+		}
+
+		parts := strings.Split(authHeader, " ")
+		if len(parts) != 2 || parts[0] != "Bearer" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Authorization header must be in the format 'Bearer <token>'"})
+			return
+		}
+
+		apiKey := parts[1]
+		if userID, ok := h.Users[apiKey]; ok {
+			c.Set("userID", userID) // Make userID available to subsequent handlers
+			c.Next()
+		} else {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid API Key"})
+		}
+	}
 }
 
 func (h *APIHandler) AuthGCP(c *gin.Context) {
@@ -219,12 +260,56 @@ func (h *APIHandler) CancelOperation(c *gin.Context) {
 	}
 }
 
+type DiscoveryMetadata struct {
+	LastRunAt time.Time `json:"last_run_at"`
+	UserID    string    `json:"user_id"`
+	Status    string    `json:"status"`
+}
+
 func (h *APIHandler) DiscoverGCP(c *gin.Context) {
 	projectID := c.Query("project")
 	if projectID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "project ID is required"})
 		return
 	}
+	userID, _ := c.Get("userID")
+	forceRefresh := c.Query("force_refresh") == "true"
+
+	// --- CACHING LOGIC ---
+	projectDataDir := strings.Replace(h.DataDir, "GCP_PROJECT", projectID, 1)
+	rawDataDir := filepath.Join(projectDataDir, "RawData")
+	metaFilePath := filepath.Join(projectDataDir, "discovery_meta.json")
+
+	if !forceRefresh {
+		metaFile, err := os.ReadFile(metaFilePath)
+		if err == nil {
+			var metadata DiscoveryMetadata
+			if json.Unmarshal(metaFile, &metadata) == nil {
+				// Check if the cache is still valid
+				cacheIsValid := time.Since(metadata.LastRunAt) < h.DiscoveryCacheDuration && metadata.Status == "Completed"
+
+				// Also verify that at least one data file exists to prevent serving an empty cache.
+				files, _ := filepath.Glob(filepath.Join(rawDataDir, "*.csv"))
+				hasDataFiles := false
+				for _, f := range files {
+					if !strings.HasSuffix(f, "discovery_meta.json") {
+						hasDataFiles = true
+						break
+					}
+				}
+
+				if cacheIsValid && hasDataFiles {
+					log.Printf("Serving discovery for project %s from cache (run by %s at %s).", projectID, metadata.UserID, metadata.LastRunAt)
+					h.mu.Lock()
+					h.discoveryStatus = "Discovery completed (from cache)."
+					h.mu.Unlock()
+					c.JSON(http.StatusOK, gin.H{"status": "Discovery process started."})
+					return
+				}
+			}
+		}
+	}
+	// --- END CACHING LOGIC ---
 
 	impersonate := c.Query("impersonate")
 	if impersonate == "" {
@@ -260,9 +345,8 @@ func (h *APIHandler) DiscoverGCP(c *gin.Context) {
 		}
 
 		// Construct the correct, project-specific path for discovery output
-		projectDataDir := strings.Replace(h.DataDir, "GCP_PROJECT", projectID, 1)
-		log.Printf("DiscoverGCP: Using data directory: %s", projectDataDir)
-		if err := svc.Discover(ctx, projectDataDir); err != nil {
+		log.Printf("DiscoverGCP: Using raw data directory: %s", rawDataDir)
+		if err := svc.Discover(ctx, rawDataDir); err != nil {
 			// Check if the error was due to cancellation
 			if ctx.Err() == context.Canceled {
 				log.Println("Discovery operation was cancelled.")
@@ -280,9 +364,26 @@ func (h *APIHandler) DiscoverGCP(c *gin.Context) {
 		h.mu.Lock()
 		h.discoveryStatus = "Discovery completed. CSV files updated."
 		h.mu.Unlock()
+
+		// Write metadata file on successful completion
+		metadata := DiscoveryMetadata{
+			LastRunAt: time.Now(),
+			UserID:    userID.(string),
+			Status:    "Completed",
+		}
+		metaBytes, err := json.Marshal(metadata)
+		if err == nil {
+			os.WriteFile(metaFilePath, metaBytes, 0644)
+			log.Printf("Wrote discovery metadata for project %s.", projectID)
+		}
 	}()
 
 	c.JSON(http.StatusOK, gin.H{"status": "Discovery process started."})
+}
+
+type ListResourcesResponse struct {
+	Resources map[string][][]string `json:"resources"`
+	Metadata  *DiscoveryMetadata    `json:"metadata,omitempty"`
 }
 
 func (h *APIHandler) ListResources(c *gin.Context) {
@@ -294,14 +395,15 @@ func (h *APIHandler) ListResources(c *gin.Context) {
 	}
 
 	projectDataDir := strings.Replace(h.DataDir, "GCP_PROJECT", projectID, 1)
-	log.Printf("ListResources: Using data directory: %s", projectDataDir)
+	rawDataDir := filepath.Join(projectDataDir, "RawData")
+	log.Printf("ListResources: Using raw data directory: %s", rawDataDir)
 	// Ensure the directory exists to prevent silent failures if discovery hasn't run.
-	if _, err := os.Stat(projectDataDir); os.IsNotExist(err) {
-		log.Printf("Discovery data directory does not exist, creating: %s", projectDataDir)
-		os.MkdirAll(projectDataDir, 0755)
+	if _, err := os.Stat(rawDataDir); os.IsNotExist(err) {
+		log.Printf("Raw data directory does not exist, creating: %s", rawDataDir)
+		os.MkdirAll(rawDataDir, 0755)
 	}
 
-	files, _ := filepath.Glob(filepath.Join(projectDataDir, "*.csv"))
+	files, _ := filepath.Glob(filepath.Join(rawDataDir, "*.csv"))
 
 	result := make(map[string][][]string)
 
@@ -323,7 +425,35 @@ func (h *APIHandler) ListResources(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, result)
+	// Also read and return the discovery metadata
+	var metadata *DiscoveryMetadata
+	metaFilePath := filepath.Join(projectDataDir, "discovery_meta.json")
+	metaFile, err := os.ReadFile(metaFilePath)
+	if err == nil {
+		var meta DiscoveryMetadata
+		if json.Unmarshal(metaFile, &meta) == nil {
+			metadata = &meta
+		}
+	}
+
+	c.JSON(http.StatusOK, ListResourcesResponse{
+		Resources: result,
+		Metadata:  metadata,
+	})
+}
+
+type FilterCache struct {
+	ActiveResources map[string][][]string `json:"active_resources"`
+	ResourcesToPlan map[string][][]string `json:"resources_to_plan"`
+	LastFilteredAt  time.Time             `json:"last_filtered_at"`
+	UserID          string                `json:"user_id"`
+}
+
+func getUserCachePath(h *APIHandler, projectID, userID string) string {
+	projectDataDir := strings.Replace(h.DataDir, "GCP_PROJECT", projectID, 1)
+	userStateDir := filepath.Join(projectDataDir, "user_state", userID)
+	os.MkdirAll(userStateDir, 0755) // Ensure the directory exists
+	return filepath.Join(userStateDir, "filter_cache.json")
 }
 
 func (h *APIHandler) FilterGCP(c *gin.Context) {
@@ -331,6 +461,36 @@ func (h *APIHandler) FilterGCP(c *gin.Context) {
 	if projectID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "project ID is required"})
 		return
+	}
+
+	userID, _ := c.Get("userID")
+	forceRefresh := c.Query("force_refresh") == "true"
+	projectDataDir := strings.Replace(h.DataDir, "GCP_PROJECT", projectID, 1)
+	cachePath := getUserCachePath(h, projectID, userID.(string))
+
+	// --- CACHING LOGIC ---
+	if !forceRefresh {
+		cacheFile, err := os.ReadFile(cachePath)
+		if err == nil {
+			var cache FilterCache
+			if json.Unmarshal(cacheFile, &cache) == nil {
+				cacheIsValid := time.Since(cache.LastFilteredAt) < h.FilterCacheDuration
+
+				// Also verify that at least one filtered data file exists.
+				activeDir := filepath.Join(projectDataDir, h.TerraformCriticalResource)
+				files, _ := filepath.Glob(filepath.Join(activeDir, "*.csv"))
+				hasDataFiles := len(files) > 0
+
+				if cacheIsValid && hasDataFiles {
+					log.Printf("Serving filter for project %s for user %s from cache.", projectID, userID)
+					h.mu.Lock()
+					h.filterStatus = "Filter process completed (from cache)."
+					h.mu.Unlock()
+					c.JSON(http.StatusOK, gin.H{"status": "Filter process started."})
+					return
+				}
+			}
+		}
 	}
 
 	impersonate := c.Query("impersonate")
@@ -353,10 +513,10 @@ func (h *APIHandler) FilterGCP(c *gin.Context) {
 		}
 
 		// Construct the correct, project-specific path for filtering
-		projectDataDir := strings.Replace(h.DataDir, "GCP_PROJECT", projectID, 1)
-		log.Printf("FilterGCP: Using data directory: %s", projectDataDir)
+		rawDataDir := filepath.Join(projectDataDir, "RawData")
+		log.Printf("FilterGCP: Reading from raw data directory: %s", rawDataDir)
 
-		if err := svc.FilterAndConsolidate(ctx, projectDataDir, func(status string) {
+		if err := svc.FilterAndConsolidate(ctx, rawDataDir, projectDataDir, func(status string) {
 			h.mu.Lock()
 			h.filterStatus = status
 			h.mu.Unlock()
@@ -364,6 +524,29 @@ func (h *APIHandler) FilterGCP(c *gin.Context) {
 			h.mu.Lock()
 			h.filterStatus = fmt.Sprintf("Filtering failed: %v", err)
 			h.mu.Unlock()
+		} else {
+			// On success, write the results to the user's cache
+			activeResources, err := readActiveResources(projectDataDir, h.TerraformCriticalResource)
+			if err != nil {
+				log.Printf("Failed to read active resources after filtering to create cache: %v", err)
+				return
+			}
+
+			cache := FilterCache{
+				ActiveResources: activeResources,
+				ResourcesToPlan: make(map[string][][]string), // Start with empty selection
+				LastFilteredAt:  time.Now(),
+				UserID:          userID.(string),
+			}
+
+			cacheBytes, err := json.MarshalIndent(cache, "", "  ")
+			if err != nil {
+				log.Printf("Failed to marshal filter cache for user %s: %v", userID, err)
+				return
+			}
+
+			os.WriteFile(cachePath, cacheBytes, 0644)
+			log.Printf("Wrote filter cache for user %s on project %s.", userID, projectID)
 		}
 	}()
 
@@ -376,11 +559,46 @@ func (h *APIHandler) ListActiveResources(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "project ID is required"})
 		return
 	}
+	userID, _ := c.Get("userID")
+	cachePath := getUserCachePath(h, projectID, userID.(string))
+
+	// --- Read from user's cache first ---
+	cacheFile, err := os.ReadFile(cachePath)
+	if err == nil {
+		var cache FilterCache
+		if json.Unmarshal(cacheFile, &cache) == nil {
+			log.Printf("Serving active resources for user %s from cache.", userID)
+			c.JSON(http.StatusOK, cache) // Return the whole cache object
+			return
+		}
+	}
+
+	// --- Fallback to reading from the shared directory if cache doesn't exist ---
+	log.Printf("No cache found for user %s, falling back to shared active resources directory.", userID)
 
 	// Construct the correct, project-specific path
 	projectDataDir := strings.Replace(h.DataDir, "GCP_PROJECT", projectID, 1)
 	log.Printf("ListActiveResources: Using data directory: %s", projectDataDir)
-	activeDir := filepath.Join(projectDataDir, h.TerraformCriticalResource)
+	activeResources, err := readActiveResources(projectDataDir, h.TerraformCriticalResource)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read active resources"})
+		return
+	}
+
+	if len(activeResources) == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "no active resources found"})
+		return
+	}
+
+	// Return in the new cache format for consistency
+	c.JSON(http.StatusOK, FilterCache{
+		ActiveResources: activeResources,
+		ResourcesToPlan: make(map[string][][]string),
+	})
+}
+
+func readActiveResources(projectDataDir, criticalResourceFolder string) (map[string][][]string, error) {
+	activeDir := filepath.Join(projectDataDir, criticalResourceFolder)
 	log.Printf("ListActiveResources: Looking for active resources in: %s", activeDir)
 
 	// Ensure the directory exists to prevent silent failures.
@@ -407,12 +625,53 @@ func (h *APIHandler) ListActiveResources(c *gin.Context) {
 		}
 	}
 
-	if len(result) == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "no active resources found"})
+	return result, nil
+}
+
+func (h *APIHandler) SaveActiveResourcesSelections(c *gin.Context) {
+	projectID := c.Query("project")
+	userID, _ := c.Get("userID")
+	cachePath := getUserCachePath(h, projectID, userID.(string))
+
+	var payload PlanPayload // The frontend sends the `resourcesToPlan` in this format
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON payload"})
 		return
 	}
 
-	c.JSON(http.StatusOK, result)
+	// 1. Read the existing cache file.
+	cacheFile, err := os.ReadFile(cachePath)
+	if err != nil {
+		// If the file doesn't exist, we can't update selections. The user should filter first.
+		log.Printf("Error reading filter cache for user %s: %v. User should filter first.", userID, err)
+		c.JSON(http.StatusNotFound, gin.H{"error": "Filter cache not found. Please run the filter process first."})
+		return
+	}
+
+	var cache FilterCache
+	if err := json.Unmarshal(cacheFile, &cache); err != nil {
+		log.Printf("Error unmarshalling filter cache for user %s: %v", userID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse filter cache."})
+		return
+	}
+
+	// 2. Update the selections.
+	cache.ResourcesToPlan = payload.Resources
+	log.Printf("Saving %d resource selection groups for user %s on project %s.", len(payload.Resources), userID, projectID)
+
+	// 3. Marshal the updated cache back to JSON.
+	updatedCacheBytes, err := json.MarshalIndent(cache, "", "  ")
+	if err != nil {
+		log.Printf("Error marshalling updated filter cache for user %s: %v", userID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to prepare updated cache."})
+		return
+	}
+
+	// 4. Write the updated cache back to the file.
+	os.WriteFile(cachePath, updatedCacheBytes, 0644)
+
+	log.Printf("Successfully saved resource selections for user %s on project %s. Returning 204 No Content.", userID, projectID)
+	c.Status(http.StatusNoContent)
 }
 
 func (h *APIHandler) ListManagedResources(c *gin.Context) {
@@ -769,13 +1028,19 @@ func (h *APIHandler) PlanTerraform(c *gin.Context) {
 			h.mu.Unlock()
 			log.Println(status)
 
-			prefixPath := filepath.Join(config.FolderName, res.Type, res.Name)
+			// Use a unique prefix for each run to prevent state lock issues
+			prefixPath := filepath.Join(config.FolderName, "run-"+runID, res.Type, res.Name)
 			initCmd := exec.CommandContext(ctx, "terraform", "init", "-no-color", fmt.Sprintf("-backend-config=bucket=%s", config.TerraformStateBucket), fmt.Sprintf("-backend-config=prefix=%s", prefixPath))
 			initCmd.Dir = path // Set working directory
 			initOutput, err := h.runCommandAndStreamStatus(initCmd, fmt.Sprintf("Resource [%d/%d] [%s]: ", i+1, len(config.Resources), res.Name), fmt.Sprintf("Init for %s: %s", displayType, res.Name))
 			combinedOutput += initOutput
 			if err != nil {
-				continue // Stop processing this resource if init fails
+				// If init fails (e.g., due to cancellation), stop the entire plan process.
+				log.Printf("Stopping plan process due to init failure on %s: %v", res.Name, err)
+				h.mu.Lock()
+				h.planStatus = fmt.Sprintf("Plan failed during init for %s: %v", res.Name, err)
+				h.mu.Unlock()
+				return
 			}
 
 			status = fmt.Sprintf("[%d/%d] Generating Terraform plan file for %s: %s", i+1, len(config.Resources), displayType, res.Name)
@@ -790,8 +1055,13 @@ func (h *APIHandler) PlanTerraform(c *gin.Context) {
 			planOutput, err := h.runCommandAndStreamStatus(planCmd, fmt.Sprintf("Resource [%d/%d] [%s]: ", i+1, len(config.Resources), res.Name), fmt.Sprintf("Plan for %s: %s", displayType, res.Name))
 			combinedOutput += planOutput
 			if err != nil {
-				finalPlanOutput += planOutput // Capture the plan error for the UI
-				continue                      // Stop processing this resource if plan fails
+				// If plan fails (e.g., due to cancellation), stop the entire plan process.
+				log.Printf("Stopping plan process due to plan failure on %s: %v", res.Name, err)
+				h.mu.Lock()
+				h.planStatus = fmt.Sprintf("Plan failed for %s: %v", res.Name, err)
+				h.mu.Unlock()
+				finalPlanOutput += planOutput // Capture the error output for the UI
+				return
 			}
 
 			showCmd := exec.CommandContext(ctx, "terraform", "show", "-no-color", planFilePath)
@@ -898,6 +1168,7 @@ func (h *APIHandler) ApplyTerraform(c *gin.Context) {
 				displayType = fbData.ServiceType
 			}
 
+			// The apply step will use the same unique prefix as the plan step
 			planFilePath := filepath.Join(path, "terraform.tfplan")
 			status := fmt.Sprintf("[%d/%d] Applying Terraform plan for %s: %s", i+1, len(config.Resources), displayType, res.Name)
 			log.Println(status)
@@ -913,7 +1184,8 @@ func (h *APIHandler) ApplyTerraform(c *gin.Context) {
 			if err != nil {
 				log.Printf("-> Terraform apply failed for %s: %v", res.Name, err)
 			} else {
-				gcsPath := filepath.Join(config.FolderName, res.Type, res.Name)
+				// The GCS path for code upload should also be unique to this run
+				gcsPath := filepath.Join(config.FolderName, "run-"+payload.WorkspaceID, res.Type, res.Name)
 				log.Printf("Uploading generated code for %s to gs://%s/%s", res.Name, h.TerraformStateBucket, gcsPath)
 				if uploadErr := uploadDirectoryToGCS(ctx, client, h.TerraformStateBucket, path, gcsPath); uploadErr != nil {
 					log.Printf("-> Failed to upload generated code for %s: %v", res.Name, uploadErr)
@@ -1815,4 +2087,25 @@ func (h *APIHandler) AppMigration(c *gin.Context) {
 	} else {
 		c.JSON(http.StatusOK, gin.H{"status": "App migration script started."})
 	}
+}
+
+// LogFrontendMessagePayload defines the structure for receiving log messages from the frontend.
+type LogFrontendMessagePayload struct {
+	Message string `json:"message"`
+	Level   string `json:"level"` // e.g., "info", "warn", "error"
+}
+
+// LogFrontendMessage receives a log message from the frontend and prints it to the backend console.
+func (h *APIHandler) LogFrontendMessage(c *gin.Context) {
+	var payload LogFrontendMessagePayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		// We don't return a big error to the client, as this is a fire-and-forget log
+		return
+	}
+
+	userID, _ := c.Get("userID")
+
+	log.Printf("[FRONTEND - User: %s] [%s] %s", userID, strings.ToUpper(payload.Level), payload.Message)
+
+	c.Status(http.StatusNoContent)
 }

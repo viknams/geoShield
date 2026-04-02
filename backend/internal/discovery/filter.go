@@ -69,7 +69,7 @@ var HeaderMap = map[string]string{
 	"FullResourcePath": "FullResourcePath",
 }
 
-func (s *FilterService) FilterAndConsolidate(ctx context.Context, dataDir string, updateStatus func(string)) error {
+func (s *FilterService) FilterAndConsolidate(ctx context.Context, rawDataDir string, projectDataDir string, updateStatus func(string)) error {
 	// 1. Get active resource names from logs in the last 30 days
 	updateStatus("Analyzing usage logs from the last 15 days...")
 	log.Println("Analyzing usage logs from the last 15 days...")
@@ -85,12 +85,12 @@ func (s *FilterService) FilterAndConsolidate(ctx context.Context, dataDir string
 	log.Println("Consolidating discovered resources...")
 
 	// Create subfolder for active resources
-	activeSubDir := filepath.Join(dataDir, os.Getenv("TERRAFORM_CRITICAL_RESOURCE"))
+	activeSubDir := filepath.Join(projectDataDir, os.Getenv("TERRAFORM_CRITICAL_RESOURCE"))
 	if err := os.MkdirAll(activeSubDir, 0755); err != nil {
 		return fmt.Errorf("failed to create %s dir: %w", os.Getenv("TERRAFORM_CRITICAL_RESOURCE"), err)
 	}
 
-	files, _ := filepath.Glob(filepath.Join(dataDir, "*.csv"))
+	files, _ := filepath.Glob(filepath.Join(rawDataDir, "*.csv"))
 	for _, file := range files {
 		// Skip our output files and subdirs
 		if strings.Contains(file, os.Getenv("TERRAFORM_CRITICAL_RESOURCE")) || strings.Contains(file, "active_important_resources") {
