@@ -84,9 +84,15 @@ func main() {
 		DefaultSQLDBVersion:     os.Getenv("DEFAULT_SQL_DB_VERSION"),
 		DefaultSQLTier:          os.Getenv("DEFAULT_SQL_TIER"),
 		DefaultSQLNetwork:       os.Getenv("DEFAULT_SQL_NETWORK"),
-		FilterCacheDuration:     time.Duration(filterCacheHours) * time.Hour,
-		DiscoveryCacheDuration:  time.Duration(cacheHours) * time.Hour,
-		Users:                   users,
+		// Add new SQL default configurations
+		DefaultSQLDeletionProtection: os.Getenv("DEFAULT_SQL_DELETION_PROTECTION") == "true",
+		DefaultSQLDatabaseName:       os.Getenv("DEFAULT_SQL_DATABASE_NAME"),
+		DefaultSQLDBUser:             os.Getenv("DEFAULT_SQL_DB_USER"),
+		DefaultSQLDBPassword:         os.Getenv("DEFAULT_SQL_DB_PASSWORD"),
+		DefaultSQLBackupBucket:       os.Getenv("SQL_BACKUP_BUCKET"),
+		FilterCacheDuration:          time.Duration(filterCacheHours) * time.Hour,
+		DiscoveryCacheDuration:       time.Duration(cacheHours) * time.Hour,
+		Users:                        users,
 	}
 
 	// Log authentication source
@@ -126,6 +132,7 @@ func main() {
 		// Terraform Plan & Apply
 		v1.GET("/plan/status", h.GetPlanStatus)
 		v1.POST("/plan", h.PlanTerraform)
+		v1.POST("/plan/cache/clear", h.ClearPlanCache)
 		v1.POST("/apply", h.ApplyTerraform)
 		v1.POST("/cancel", h.CancelOperation)
 

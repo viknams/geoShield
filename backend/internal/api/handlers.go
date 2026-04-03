@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -54,18 +55,23 @@ type APIHandler struct {
 	DefaultRegion          string
 	AppMigrationScriptPath string
 	// New configurable defaults for resource mapping
-	DefaultVMNetwork        string
-	DefaultVMSubnetwork     string
-	DefaultVMMachineType    string
-	DefaultVMImage          string
-	DefaultBucketLocation   string
-	DefaultBucketVersioning bool
-	DefaultSQLDBVersion     string
-	DefaultSQLTier          string
-	DefaultSQLNetwork       string
-	FilterCacheDuration     time.Duration
-	DiscoveryCacheDuration  time.Duration
-	Users                   map[string]string // Map of API Key -> UserID
+	DefaultVMNetwork             string
+	DefaultVMSubnetwork          string
+	DefaultVMMachineType         string
+	DefaultVMImage               string
+	DefaultBucketLocation        string
+	DefaultBucketVersioning      bool
+	DefaultSQLDBVersion          string
+	DefaultSQLTier               string
+	DefaultSQLNetwork            string
+	DefaultSQLDeletionProtection bool
+	DefaultSQLDatabaseName       string
+	DefaultSQLDBUser             string
+	DefaultSQLDBPassword         string
+	DefaultSQLBackupBucket       string
+	FilterCacheDuration          time.Duration
+	DiscoveryCacheDuration       time.Duration
+	Users                        map[string]string // Map of API Key -> UserID
 
 	// Track auth status
 	mu              sync.RWMutex
@@ -320,6 +326,19 @@ func (h *APIHandler) DiscoverGCP(c *gin.Context) {
 	h.discoveryStatus = "Starting discovery process..."
 	h.mu.Unlock()
 
+	// --- Cleanup old discovery files ---
+	if forceRefresh {
+		log.Printf("Force refresh enabled. Cleaning up old discovery files and metadata.")
+		// Remove old .csv files
+		files, _ := filepath.Glob(filepath.Join(rawDataDir, "*.csv"))
+		for _, f := range files {
+			os.Remove(f)
+		}
+		// Also remove the metadata file to ensure a complete refresh
+		os.Remove(metaFilePath)
+		log.Printf("Cleanup complete.")
+	}
+
 	go func() {
 		// Create a cancellable context for this operation
 		ctx, cancel := context.WithCancel(context.Background())
@@ -456,6 +475,13 @@ func getUserCachePath(h *APIHandler, projectID, userID string) string {
 	return filepath.Join(userStateDir, "filter_cache.json")
 }
 
+func getUserPlanCachePath(h *APIHandler, projectID, userID string) string {
+	projectDataDir := strings.Replace(h.DataDir, "GCP_PROJECT", projectID, 1)
+	userStateDir := filepath.Join(projectDataDir, "user_state", userID)
+	os.MkdirAll(userStateDir, 0755) // Ensure the directory exists
+	return filepath.Join(userStateDir, "plan_cache.json")
+}
+
 func (h *APIHandler) FilterGCP(c *gin.Context) {
 	projectID := c.Query("project")
 	if projectID == "" {
@@ -501,6 +527,16 @@ func (h *APIHandler) FilterGCP(c *gin.Context) {
 	h.mu.Lock()
 	h.filterStatus = "Starting filter process..."
 	h.mu.Unlock()
+
+	// --- Cleanup old filter files ---
+	if forceRefresh {
+		activeDir := filepath.Join(projectDataDir, h.TerraformCriticalResource)
+		log.Printf("Force refresh enabled. Cleaning up old filtered resource files in %s", activeDir)
+		files, _ := filepath.Glob(filepath.Join(activeDir, "*.csv"))
+		for _, f := range files {
+			os.Remove(f)
+		}
+	}
 
 	go func() {
 		ctx := context.Background()
@@ -755,16 +791,17 @@ type GCSData struct {
 }
 
 type VMData struct {
-	ProjectID    string
-	Region       string
-	InstanceName string
-	Zone         string
-	Network      string
-	Subnetwork   string
-	MachineType  string
-	Image        string
-	Labels       map[string]string
-	FastRef      string
+	ProjectID     string
+	Region        string
+	InstanceName  string
+	Zone          string
+	Network       string
+	Subnetwork    string
+	MachineType   string
+	Image         string
+	Labels        map[string]string
+	StartupScript string
+	FastRef       string
 }
 
 type GKEData struct {
@@ -778,14 +815,21 @@ type GKEData struct {
 }
 
 type SQLData struct {
-	ProjectID string
-	Region    string
-	DBName    string
-	Network   string
-	DBVersion string
-	Tier      string
-	Labels    map[string]string
-	FastRef   string
+	ProjectID          string
+	Region             string
+	DBName             string
+	Network            string
+	DBVersion          string
+	Tier               string
+	Labels             map[string]string
+	FastRef            string
+	DeletionProtection bool
+	DatabaseName       string
+	DBUser             string
+	DBPassword         string
+	// Edition field removed as per request
+	Edition      string
+	BackupBucket string
 }
 
 type LBData struct {
@@ -847,7 +891,7 @@ func (h *APIHandler) mapFromUnifiedResource(serviceType string, header []string,
 	// Use stable release tag for Fabric modules instead of AssetType
 	fastRef := h.TerraformModuleVersion
 	if fastRef == "" {
-		fastRef = "v20.0.0" // Fallback version
+		fastRef = "v29.0.0" // Fallback version that supports the 'edition' argument
 	}
 
 	// Default values for VM
@@ -917,20 +961,50 @@ func (h *APIHandler) mapFromUnifiedResource(serviceType string, header []string,
 		} else {
 			zone = region + "-b" // Default to zone 'b'
 		}
-		return "compute-vm", VMData{projectID, region, newResName, zone, vmNetwork, vmSubnetwork, vmMachineType, vmImage, labels, fastRef}, newResName
+
+		// Read the startup script from the new file
+		startupScriptPath := filepath.Join(h.GenSvc.TemplateDir, "gcp", "compute-vm", "startup_vm_script.sh")
+		scriptContent, err := os.ReadFile(startupScriptPath)
+		if err != nil {
+			log.Printf("Error reading startup script from %s: %v. VM will be created without startup script.", startupScriptPath, err)
+			// Proceed with an empty script if there's an error reading the file.
+		}
+
+		return "compute-vm", VMData{projectID, region, newResName, zone, vmNetwork, vmSubnetwork, vmMachineType, vmImage, labels, string(scriptContent), fastRef}, newResName
 
 	case "storage.Bucket": // Use configurable GCS defaults
 		return "gcs", GCSData{projectID, region, newResName, bucketLocation, labels, bucketVersioning, fastRef}, newResName
 	case "container.Cluster":
 		return "gke-cluster", GKEData{projectID, region, newResName, "default", "default", labels, fastRef}, newResName
 	case "sqladmin.Instance":
-		return "cloudsql-instance", SQLData{projectID, region, newResName, sqlNetwork, sqlDBVersion, sqlTier, labels, fastRef}, newResName
+		return "cloudsql-instance", SQLData{
+			ProjectID:          projectID,
+			Region:             region,
+			DBName:             newResName,
+			Network:            sqlNetwork,
+			DBVersion:          sqlDBVersion,
+			Tier:               sqlTier,
+			Labels:             labels,
+			FastRef:            fastRef,
+			DeletionProtection: h.DefaultSQLDeletionProtection,
+			DatabaseName:       h.DefaultSQLDatabaseName,
+			DBUser:             h.DefaultSQLDBUser,
+			DBPassword:         h.DefaultSQLDBPassword,
+			BackupBucket:       h.DefaultSQLBackupBucket,
+		}, newResName
 	case "compute.ForwardingRule":
 		return "net-lb-app-ext", LBData{projectID, region, newResName, fastRef, labels}, newResName
 	default:
 		// Map any other selected resource to the fallback generic module
 		return "fallback", FallbackData{projectID, region, newResName, fastRef, labels, serviceType}, newResName
 	}
+}
+
+type PlanCacheEntry struct {
+	Resources   map[string][][]string `json:"resources"`
+	PlanOutput  string                `json:"plan_output"`
+	WorkspaceID string                `json:"workspace_id"`
+	Timestamp   time.Time             `json:"timestamp"`
 }
 
 type PlanPayload struct {
@@ -940,6 +1014,8 @@ type PlanPayload struct {
 
 func (h *APIHandler) PlanTerraform(c *gin.Context) {
 	var payload PlanPayload
+	userID, _ := c.Get("userID")
+	projectID := c.Query("project")
 	if err := c.ShouldBindJSON(&payload); err != nil {
 		// Log the raw body for debugging if JSON binding fails
 		bodyBytes, _ := io.ReadAll(c.Request.Body)
@@ -949,6 +1025,51 @@ func (h *APIHandler) PlanTerraform(c *gin.Context) {
 		return
 	}
 
+	log.Printf("Received 'view plan' request for project %s from user %s.", projectID, userID)
+
+	// --- PERSISTENT BACKEND CACHING LOGIC ---
+	// Generate a stable key for caching based on projectID and resourcesToPlan
+	resourcesJSON, err := json.Marshal(payload.Resources)
+	if err != nil {
+		log.Printf("Error marshalling resources for cache key: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to process resources for caching"})
+		return
+	}
+	hash := sha256.Sum256(resourcesJSON)
+	cacheKey := fmt.Sprintf("%s-%x", projectID, hash)
+	planCachePath := getUserPlanCachePath(h, projectID, userID.(string))
+
+	// Read the plan cache file
+	planCacheFile, err := os.ReadFile(planCachePath)
+	if err == nil {
+		var planCache map[string]PlanCacheEntry
+		if json.Unmarshal(planCacheFile, &planCache) == nil {
+			// Check if a valid cached plan exists
+			if cachedEntry, found := planCache[cacheKey]; found && time.Since(cachedEntry.Timestamp) < 1*time.Hour {
+				// --- WORKSPACE VALIDATION ---
+				workspaceDir := filepath.Join(h.OutputDir, "run-"+cachedEntry.WorkspaceID)
+				if _, err := os.Stat(workspaceDir); !os.IsNotExist(err) {
+					// Workspace exists, so the cache is valid.
+					log.Printf("CACHE HIT: Serving plan for project %s from persistent backend cache. Workspace '%s' is valid.", projectID, cachedEntry.WorkspaceID)
+					h.mu.Lock()
+					// Immediately set the status to completed with the cached data
+					h.planStatus = fmt.Sprintf("COMPLETED::%s::%s", cachedEntry.WorkspaceID, cachedEntry.PlanOutput)
+					h.mu.Unlock()
+					c.JSON(http.StatusOK, gin.H{"status": "Plan process started (from cache)."})
+					return
+				} else {
+					// Workspace does not exist, cache is stale.
+					log.Printf("Cache hit for project %s, but workspace '%s' not found. Cache is stale. Generating new plan.", projectID, cachedEntry.WorkspaceID)
+				}
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		log.Printf("Error reading plan cache file: %v", err)
+	}
+
+	log.Printf("CACHE MISS: No valid cache found for project %s. Generating a new plan.", projectID)
+	// --- END PERSISTENT BACKEND CACHING LOGIC ---
+
 	h.mu.Lock()
 	h.planStatus = "Starting plan process..."
 	h.mu.Unlock()
@@ -956,7 +1077,6 @@ func (h *APIHandler) PlanTerraform(c *gin.Context) {
 	go func() {
 		ctx := context.Background() // Create a new context for the long-running background task
 		log.Printf("Successfully received and parsed plan payload for %d resource types.", len(payload.Resources))
-		projectID := c.Query("project")
 		if projectID == "" {
 			h.mu.Lock()
 			h.planStatus = "Error: project ID is required"
@@ -1028,8 +1148,8 @@ func (h *APIHandler) PlanTerraform(c *gin.Context) {
 			h.mu.Unlock()
 			log.Println(status)
 
-			// Use a unique prefix for each run to prevent state lock issues
-			prefixPath := filepath.Join(config.FolderName, "run-"+runID, res.Type, res.Name)
+			// Use a stable prefix based on the resource itself to ensure state is managed correctly over time.
+			prefixPath := filepath.Join(config.FolderName, res.Type, res.Name)
 			initCmd := exec.CommandContext(ctx, "terraform", "init", "-no-color", fmt.Sprintf("-backend-config=bucket=%s", config.TerraformStateBucket), fmt.Sprintf("-backend-config=prefix=%s", prefixPath))
 			initCmd.Dir = path // Set working directory
 			initOutput, err := h.runCommandAndStreamStatus(initCmd, fmt.Sprintf("Resource [%d/%d] [%s]: ", i+1, len(config.Resources), res.Name), fmt.Sprintf("Init for %s: %s", displayType, res.Name))
@@ -1057,10 +1177,10 @@ func (h *APIHandler) PlanTerraform(c *gin.Context) {
 			if err != nil {
 				// If plan fails (e.g., due to cancellation), stop the entire plan process.
 				log.Printf("Stopping plan process due to plan failure on %s: %v", res.Name, err)
+				// Set the status to the full output of the failed command for detailed UI feedback.
 				h.mu.Lock()
-				h.planStatus = fmt.Sprintf("Plan failed for %s: %v", res.Name, err)
+				h.planStatus = fmt.Sprintf("Plan failed for %s. Error: %s", res.Name, planOutput)
 				h.mu.Unlock()
-				finalPlanOutput += planOutput // Capture the error output for the UI
 				return
 			}
 
@@ -1083,6 +1203,27 @@ func (h *APIHandler) PlanTerraform(c *gin.Context) {
 		h.mu.Lock()
 		h.planStatus = fmt.Sprintf("COMPLETED::%s::%s", runID, finalPlanOutput)
 		h.mu.Unlock()
+
+		// --- BACKEND CACHE SET ---
+		// Read the cache file again to handle concurrent writes, then update and save.
+		planCacheFile, _ := os.ReadFile(planCachePath)
+		planCache := make(map[string]PlanCacheEntry)
+		if len(planCacheFile) > 0 {
+			json.Unmarshal(planCacheFile, &planCache)
+		}
+
+		planCache[cacheKey] = PlanCacheEntry{
+			Resources:   payload.Resources,
+			PlanOutput:  finalPlanOutput,
+			WorkspaceID: runID,
+			Timestamp:   time.Now(),
+		}
+
+		updatedCacheBytes, err := json.MarshalIndent(planCache, "", "  ")
+		if err == nil {
+			os.WriteFile(planCachePath, updatedCacheBytes, 0644)
+			log.Printf("CACHE SET: Saved new plan to persistent cache for user %s. WorkspaceID: %s. Resources: %s", userID, runID, string(resourcesJSON))
+		}
 	}()
 
 	c.JSON(http.StatusOK, gin.H{"status": "Plan process started."})
@@ -1095,6 +1236,7 @@ type ApplyPayload struct {
 
 func (h *APIHandler) ApplyTerraform(c *gin.Context) {
 	var payload ApplyPayload
+	userID, _ := c.Get("userID")
 	if err := c.ShouldBindJSON(&payload); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON payload"})
 		return
@@ -1182,10 +1324,30 @@ func (h *APIHandler) ApplyTerraform(c *gin.Context) {
 			output, err := h.runCommandAndStreamStatus(applyCmd, fmt.Sprintf("Resource [%d/%d] [%s]: ", i+1, len(config.Resources), res.Name), fmt.Sprintf("Apply for %s: %s", displayType, res.Name))
 			combinedOutput += output
 			if err != nil {
+				// --- Invalidate Cache on Failure ---
+				log.Printf("-> Terraform apply failed for %s: %v. Invalidating plan cache.", res.Name, err)
+				planCachePath := getUserPlanCachePath(h, projectID, userID.(string))
+				planCacheFile, _ := os.ReadFile(planCachePath)
+				planCache := make(map[string]PlanCacheEntry)
+				if json.Unmarshal(planCacheFile, &planCache) == nil {
+					var cacheKeyToDelete string
+					for key, entry := range planCache {
+						if entry.WorkspaceID == payload.WorkspaceID {
+							cacheKeyToDelete = key
+							break
+						}
+					}
+					if cacheKeyToDelete != "" {
+						delete(planCache, cacheKeyToDelete)
+						updatedCacheBytes, _ := json.MarshalIndent(planCache, "", "  ")
+						os.WriteFile(planCachePath, updatedCacheBytes, 0644)
+						log.Printf("Invalidated and removed plan cache entry for failed apply on workspace ID: %s", payload.WorkspaceID)
+					}
+				}
 				log.Printf("-> Terraform apply failed for %s: %v", res.Name, err)
 			} else {
-				// The GCS path for code upload should also be unique to this run
-				gcsPath := filepath.Join(config.FolderName, "run-"+payload.WorkspaceID, res.Type, res.Name)
+				// The GCS path for code upload should be the stable resource path.
+				gcsPath := filepath.Join(config.FolderName, res.Type, res.Name)
 				log.Printf("Uploading generated code for %s to gs://%s/%s", res.Name, h.TerraformStateBucket, gcsPath)
 				if uploadErr := uploadDirectoryToGCS(ctx, client, h.TerraformStateBucket, path, gcsPath); uploadErr != nil {
 					log.Printf("-> Failed to upload generated code for %s: %v", res.Name, uploadErr)
@@ -1199,12 +1361,74 @@ func (h *APIHandler) ApplyTerraform(c *gin.Context) {
 		}
 
 		log.Printf("Completed applying for %d resources.", len(config.Resources))
+
+		// --- Invalidate Backend Cache ---
+		// After a successful apply, remove the plan from the persistent cache.
+		planCachePath := getUserPlanCachePath(h, projectID, userID.(string))
+		planCacheFile, err := os.ReadFile(planCachePath)
+		if err == nil {
+			planCache := make(map[string]PlanCacheEntry)
+			if json.Unmarshal(planCacheFile, &planCache) == nil {
+				var cacheKeyToDelete string
+				for key, entry := range planCache {
+					if entry.WorkspaceID == payload.WorkspaceID {
+						cacheKeyToDelete = key
+						break
+					}
+				}
+				if cacheKeyToDelete != "" {
+					delete(planCache, cacheKeyToDelete)
+					updatedCacheBytes, _ := json.MarshalIndent(planCache, "", "  ")
+					os.WriteFile(planCachePath, updatedCacheBytes, 0644)
+					log.Printf("Invalidated and removed plan cache entry for applied workspace ID: %s", payload.WorkspaceID)
+				}
+			}
+		}
+
 		h.mu.Lock()
 		h.planStatus = fmt.Sprintf("APPLY_COMPLETED::%s", combinedOutput)
 		h.mu.Unlock()
 	}()
 
 	c.JSON(http.StatusOK, gin.H{"status": "Apply process started."})
+}
+
+func (h *APIHandler) ClearPlanCache(c *gin.Context) {
+	userID, _ := c.Get("userID")
+	projectID := c.Query("project")
+	if projectID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "project ID is required"})
+		return
+	}
+
+	planCachePath := getUserPlanCachePath(h, projectID, userID.(string))
+
+	// --- Workspace Cleanup ---
+	// Before deleting the cache file, read it to get the workspace IDs to clean up.
+	planCacheFile, err := os.ReadFile(planCachePath)
+	if err == nil {
+		var planCache map[string]PlanCacheEntry
+		if json.Unmarshal(planCacheFile, &planCache) == nil {
+			for _, entry := range planCache {
+				workspaceDir := filepath.Join(h.OutputDir, "run-"+entry.WorkspaceID)
+				log.Printf("Clearing cached workspace directory: %s", workspaceDir)
+				os.RemoveAll(workspaceDir)
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		log.Printf("Could not read plan cache file for workspace cleanup (it may not exist): %v", err)
+	}
+	// --- End Workspace Cleanup ---
+
+	err = os.Remove(planCachePath)
+	if err != nil && !os.IsNotExist(err) {
+		log.Printf("Error removing plan cache file for user %s on project %s: %v", userID, projectID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to clear plan cache on server."})
+		return
+	}
+
+	log.Printf("Successfully cleared persistent plan cache for user %s on project %s.", userID, projectID)
+	c.Status(http.StatusNoContent)
 }
 
 // runCommandAndStreamStatus executes a command, streams its stdout/stderr to the planStatus,
@@ -1553,7 +1777,7 @@ func (h *APIHandler) PlanDestroyTerraform(c *gin.Context) {
 
 		var finalPlanOutput string
 		for i, res := range config.Resources {
-			path := filepath.Join(workspaceDir, config.FolderName, res.Type, res.Name)
+			path := filepath.Join(workspaceDir, h.TerraformFolderName, res.Type, res.Name)
 			displayType := res.Type
 			if fbData, ok := res.Data.(FallbackData); ok {
 				displayType = fbData.ServiceType

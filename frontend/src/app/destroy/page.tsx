@@ -31,6 +31,7 @@ function DestroyPage() {
 	const [expandedSections, setExpandedSections] = useState<
 		Record<string, boolean>
 	>({});
+	const [apiKey, setApiKey] = useState<string>("");
 	const [isPlanPolling, setIsPlanPolling] = useState(false);
 
 	const searchParams = useSearchParams();
@@ -46,10 +47,14 @@ function DestroyPage() {
 		endpoint: string,
 		method = "POST",
 		bodyData?: any,
+		signal?: AbortSignal,
 	) => {
 		if (!projectID) {
 			setStatus("Error: Project ID is required.");
 			return;
+		}
+		if (!apiKey) {
+			throw new Error("API Key is not set. Please enter your API Key.");
 		}
 		setLoading(true);
 		setStatus(`Executing ${endpoint}...`);
@@ -58,6 +63,10 @@ function DestroyPage() {
 			if (bodyData) {
 				options.headers = { "Content-Type": "application/json" };
 				options.body = JSON.stringify(bodyData);
+			}
+			options.headers = {
+				"Content-Type": "application/json",
+				"Authorization": `Bearer ${apiKey}`,
 			}
 			const res = await fetch(
 				`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/${endpoint}?project=${projectID}`,
@@ -95,6 +104,14 @@ function DestroyPage() {
 		}
 	}, [searchParams]);
 
+	// Load API key from session storage on mount
+	useEffect(() => {
+		const storedApiKey = sessionStorage.getItem("geoShieldApiKey");
+		if (storedApiKey) {
+			setApiKey(storedApiKey);
+		}
+	}, []);
+
 	useEffect(() => {
 		if (projectID) {
 			apiCall("managed-resources", "GET");
@@ -109,7 +126,11 @@ function DestroyPage() {
 				try {
 					const res = await fetch(
 						`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/plan/status`,
+						{ headers: { "Authorization": `Bearer ${apiKey}` } }
 					);
+					if (!res.ok) {
+						throw new Error(`HTTP error! status: ${res.status}`);
+					}
 					const data = await res.json();
 
 					if (data.status.startsWith("COMPLETED::") || data.status.startsWith("DESTROY_COMPLETED::")) {
@@ -131,7 +152,7 @@ function DestroyPage() {
 						// Live streaming status
 						setStatus(data.status);
 					}
-				} catch (e) {
+				} catch (e: any) {
 					console.error("Polling failed", e);
 					setIsPlanPolling(false);
 					setLoading(false); // Stop loading if polling fails

@@ -6,11 +6,24 @@ module "instance" {
   network_interfaces = [{
     network    = "{{ .Network }}"
     subnetwork = "{{ .Subnetwork }}"
+    access_config = [{
+      // Ephemeral public IP
+    }]
   }]
   instance_type = "{{ .MachineType }}"
   boot_disk = {
     initialize_params = {
       image = "{{ .Image }}"
     }
+  }
+
+  service_account_scopes = [
+    "cloud-platform", // Full access to all Cloud APIs
+  ]
+
+  metadata = {
+    startup-script = <<-EOT
+{{ .StartupScript }}
+EOT
   }
 }

@@ -10,5 +10,12 @@ module "db" {
   region           = var.region
   network          = data.google_compute_network.private_network.id
   database_version = "{{ .DBVersion }}"
-  tier             = "{{ .Tier }}"
+  tier             = "{{ if .Tier }}{{ .Tier }}{{ else }}db-custom-2-7680{{ end }}"
+  deletion_protection = {{ .DeletionProtection }}
+
+  databases = ["{{ if .DatabaseName }}{{ .DatabaseName }}{{ else }}library_db{{ end }}"]
+
+  users = {
+    "{{ if .DBUser }}{{ .DBUser }}{{ else }}library{{ end }}" = "{{ if .DBPassword }}{{ .DBPassword }}{{ else }}library@2026{{ end }}"
+  }
 }
