@@ -128,6 +128,11 @@ function HomePageClient() {
 		user_id: string;
 		status: string;
 	} | null>(null);
+	const [filterMetadata, setFilterMetadata] = useState<{
+		last_filtered_at: string;
+		user_id: string;
+	} | null>(null);
+	const [hasCachedPlan, setHasCachedPlan] = useState<boolean>(false);
 
 
 	const [bulkRegion, setBulkRegion] = useState("");
@@ -179,16 +184,23 @@ function HomePageClient() {
 	const fetchActiveResources = async () => {
 		try {
 			const data = await apiCall("resources/active", "GET");
-			if (data && data.active_resources) {
-				const resources = data.active_resources;
-				// The logic to add NewRegion/NewSubnet columns can be simplified or ensured by the backend
-				setActiveResources(resources);
+			if (data) {
+				setActiveResources(data.active_resources || {});
 				// Restore the user's previous selections
 				const loadedResourcesToPlan = data.resources_to_plan || {};
 				setResourcesToPlan(loadedResourcesToPlan);
 
+				if (data.last_filtered_at && data.user_id) {
+					setFilterMetadata({
+						last_filtered_at: data.last_filtered_at,
+						user_id: data.user_id,
+					});
+				} else {
+					setFilterMetadata(null);
+				}
 			} else {
 				setActiveResources({});
+				setFilterMetadata(null);
 			}
 		} catch (e) {
 			console.error("Failed to fetch active resources", e);
@@ -415,6 +427,7 @@ function HomePageClient() {
 		setExpandedSections({});
 		setLastCompletedStep(""); // Clear automation progress on project change
 		setRiskChangeAlert(null);
+		setFilterMetadata(null);
 		localStorage.removeItem(`geoShieldLastStep_${projectID}`);
 		localStorage.removeItem(`geoShieldPlanCache_${projectID}`);
 	}, [projectID]);
@@ -797,6 +810,7 @@ function HomePageClient() {
 				// If automation is running for R4, continue to the migrate step
 				if (isAutomationRunning && latestRiskMessage?.currentRiskLevel && latestRiskMessage.currentRiskLevel >= "R4") {
 					setStatus("Apply complete. Waiting 30s before migrating...");
+					setLoading(false); // Turn off loader during the delay
 					await delay(30000);
 					await handleManualAction("migrate", "POST", undefined, true, "Completed", 2 * 60 * 60 * 1000);
 				}
@@ -821,10 +835,6 @@ function HomePageClient() {
 				setLoading(false);
 			}
 
-			// End the automation sequence only at the very last step.
-			if (endpoint === 'migrate' || (endpoint === 'apply' && latestRiskMessage?.currentRiskLevel === 'R3') || (endpoint === 'plan' && latestRiskMessage?.currentRiskLevel === 'R2')) {
-				setIsAutomationRunning(false);
-			}
 		}
 	};
 
@@ -922,6 +932,25 @@ function HomePageClient() {
 		}
 	}, [webSocketLatestMessage]);
 
+	// Effect to check if a cached plan exists for the current selection
+	useEffect(() => {
+		if (Object.keys(resourcesToPlan).length > 0) {
+			const cachedPlanData = localStorage.getItem(`geoShieldPlanCache_${projectID}`);
+			if (cachedPlanData) {
+				try {
+					const parsedCache = JSON.parse(cachedPlanData);
+					const currentPlanKey = getCanonicalJson(resourcesToPlan);
+					if (parsedCache.cacheKey === currentPlanKey) {
+						setHasCachedPlan(true);
+						return;
+					}
+				} catch (e) { /* ignore parsing errors */ }
+			}
+		}
+		setHasCachedPlan(false);
+	}, [resourcesToPlan, projectID]);
+
+
 	const steps = [
 		{ id: "auth", label: "Auth", color: "bg-orange-500" },
 		{ id: "discovered", label: "Discover", color: "bg-blue-500" },
@@ -1009,10 +1038,14 @@ function HomePageClient() {
 						</div>
 						<button
 							onClick={() => {
-								if (ws) {
+								if (ws && ws.readyState === WebSocket.OPEN) {
 									disconnect();
+									setWorkflowMode('manual'); // Revert to manual mode on disconnect
 								} else {
-									connect(projectID, apiKey);
+									if (apiKey) { // Ensure apiKey is loaded before connecting
+										connect(projectID, apiKey);
+										setWorkflowMode('auto'); // Set default to auto-workflow on connect
+									}
 								}
 							}}
 							disabled={!projectID || !apiKey}
@@ -1169,10 +1202,10 @@ function HomePageClient() {
 						</div>
 					</div>
 
-					<div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+					{workflowMode === 'manual' && (<div className="grid grid-cols-2 lg:grid-cols-5 gap-4 animate-in fade-in duration-300">
 						<button
 							onClick={() => handleManualAction("auth", "POST", undefined, true, "Completed", 45 * 1000)}
-							disabled={loading || isAutomationRunning || workflowMode === 'auto'}
+							disabled={loading || isAutomationRunning}
 							className="group relative overflow-hidden bg-orange-500 hover:bg-orange-600 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-orange-200 active:scale-95 disabled:opacity-50"
 						>
 							<span className="relative z-10 flex items-center justify-center gap-2">
@@ -1187,7 +1220,7 @@ function HomePageClient() {
 						</button>
 						<button
 							onClick={() => handleManualAction("discover", "POST", undefined, true, "Discovery completed", 5 * 60 * 1000)}
-							disabled={loading || isAutomationRunning || workflowMode === 'auto'}
+							disabled={loading || isAutomationRunning}
 							className="group relative overflow-hidden bg-blue-600 hover:bg-blue-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-blue-200 active:scale-95 disabled:opacity-50"
 						>
 							<span className="relative z-10 flex items-center justify-center gap-2">
@@ -1209,7 +1242,7 @@ function HomePageClient() {
 						</button>
 						<button
 							onClick={() => handleManualAction("filter", "POST", undefined, true, "Filter process completed", 5 * 60 * 1000)}
-							disabled={loading || isAutomationRunning || workflowMode === 'auto'}
+							disabled={loading || isAutomationRunning}
 							className="group relative overflow-hidden bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-emerald-200 active:scale-95 disabled:opacity-50"
 						>
 							<span className="relative z-10 flex items-center justify-center gap-2">
@@ -1230,7 +1263,7 @@ function HomePageClient() {
 						</button>
 						<button
 							onClick={() => handleManualAction("plan", "POST", { resources: resourcesToPlan, workspaceId: "" }, true, "COMPLETED::", 15 * 60 * 1000)}
-							disabled={loading || isAutomationRunning || workflowMode === 'auto' || Object.keys(resourcesToPlan).length === 0}
+							disabled={loading || isAutomationRunning || Object.keys(resourcesToPlan).length === 0}
 							className="group relative overflow-hidden bg-purple-600 hover:bg-purple-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-purple-200 active:scale-95 disabled:opacity-50"
 						>
 							<span className="relative z-10 flex items-center justify-center gap-2">
@@ -1252,7 +1285,7 @@ function HomePageClient() {
 						</button>
 						<button
 							onClick={() => handleManualAction("migrate", "POST", undefined, true, "Completed", 2 * 60 * 60 * 1000)}
-							disabled={loading || isAutomationRunning || workflowMode === 'auto'}
+							disabled={loading || isAutomationRunning}
 							className="group relative overflow-hidden bg-teal-600 hover:bg-teal-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-teal-200 active:scale-95 disabled:opacity-50"
 						>
 							<span className="relative z-10 flex items-center justify-center gap-2">
@@ -1275,7 +1308,7 @@ function HomePageClient() {
 							className="h-full"
 						>
 							<button
-								disabled={loading || !projectID || isAutomationRunning || workflowMode === 'auto'}
+								disabled={loading || !projectID || isAutomationRunning}
 								className="w-full h-full group relative overflow-hidden bg-gray-600 hover:bg-gray-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-gray-200 active:scale-95 disabled:opacity-50"
 							>
 								<span className="relative z-10 flex items-center justify-center gap-2">
@@ -1301,7 +1334,7 @@ function HomePageClient() {
 							className="h-full"
 						>
 							<button
-								disabled={loading || !projectID || isAutomationRunning || workflowMode === 'auto'}
+								disabled={loading || !projectID || isAutomationRunning}
 								className="w-full h-full group relative overflow-hidden bg-cyan-600 hover:bg-cyan-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-cyan-200 active:scale-95 disabled:opacity-50"
 							>
 								<span className="relative z-10 flex items-center justify-center gap-2">
@@ -1317,7 +1350,7 @@ function HomePageClient() {
 								</span>
 							</button>
 						</Link>
-					</div>
+					</div>)}
 				</section>
 
 				<section className="pt-4">
@@ -1452,6 +1485,8 @@ function HomePageClient() {
 									<h2 className="text-lg font-bold text-slate-800">
 										Active Resources
 									</h2>
+								</div>
+								<div className="flex items-center gap-2 pt-1">
 									<button
 										onClick={async () => {
 											// A true force refresh must first re-discover, then re-filter.
@@ -1595,10 +1630,17 @@ function HomePageClient() {
 							</div>
 							{/* --- AUTOMATION CONFIRMATION ROW --- */}
 							{isAutomationRunning && (
-								<div className="mt-6 w-full bg-purple-50 border-2 border-dashed border-purple-200 rounded-2xl p-4 flex flex-col md:flex-row items-center justify-center md:justify-between gap-4">
-									<div className="flex items-center gap-3 text-purple-800 text-sm font-semibold">
-										<svg className="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
-										<span>Please review and confirm the selected resources to continue the automated workflow.</span>
+								<div className="mt-6 w-full bg-purple-50 border-2 border-dashed border-purple-200 rounded-2xl p-4 flex flex-col md:flex-row items-center justify-center md:justify-between gap-4 text-center md:text-left">
+									<div className="flex-grow">
+										<div className="flex items-center justify-center md:justify-start gap-3 text-purple-800 text-sm font-semibold">
+											<svg className="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+											<span>Please review and confirm the selected resources to continue the automated workflow.</span>
+										</div>
+										{filterMetadata && (
+											<p className="text-xs text-purple-500 font-medium mt-1 ml-8">
+												(Resource list is from a cache generated at {new Date(filterMetadata.last_filtered_at).toLocaleString()} by <span className="font-bold">{filterMetadata.user_id}</span>)
+											</p>
+										)}
 									</div>
 									<button
 										onClick={() => continueAutomation(latestRiskMessage?.currentRiskLevel || "")}
@@ -1608,6 +1650,15 @@ function HomePageClient() {
 										<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
 										Confirm & Continue
 									</button>
+								</div>
+							)}
+
+							{hasCachedPlan && (
+								<div className="mt-4 w-full bg-blue-50 border border-blue-200 rounded-xl p-3 flex items-center justify-center gap-3 text-blue-800 text-sm font-semibold">
+									<svg className="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+										<path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+									</svg>
+									<span>A cached plan already exists for this selection. Clicking "View Plan" will be instantaneous.</span>
 								</div>
 							)}
 
