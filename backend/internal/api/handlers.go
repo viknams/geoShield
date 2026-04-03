@@ -1981,6 +1981,7 @@ var upgrader = websocket.Upgrader{
 }
 
 func (h *APIHandler) StreamPubSubMessagesWS(c *gin.Context) {
+	userID, _ := c.Get("userID")
 	topicName := h.PubSubTopic
 	if topicName == "" {
 		log.Printf("PUBSUB_STREAMING_TOPIC environment variable not set.")
@@ -2011,7 +2012,11 @@ func (h *APIHandler) StreamPubSubMessagesWS(c *gin.Context) {
 		}
 		return
 	}
-	defer conn.Close()
+	log.Printf("WebSocket connected for user: %s", userID)
+	defer func() {
+		log.Printf("WebSocket disconnected for user: %s", userID)
+		conn.Close()
+	}()
 
 	// --- PING PONG to keep connection alive ---
 	// The server will send a ping to the client every 10 seconds.
