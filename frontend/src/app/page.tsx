@@ -128,6 +128,11 @@ function HomePageClient() {
 		user_id: string;
 		status: string;
 	} | null>(null);
+	const [filterMetadata, setFilterMetadata] = useState<{
+		last_filtered_at: string;
+		user_id: string;
+	} | null>(null);
+	const [hasCachedPlan, setHasCachedPlan] = useState<boolean>(false);
 
 
 	const [bulkRegion, setBulkRegion] = useState("");
@@ -179,16 +184,23 @@ function HomePageClient() {
 	const fetchActiveResources = async () => {
 		try {
 			const data = await apiCall("resources/active", "GET");
-			if (data && data.active_resources) {
-				const resources = data.active_resources;
-				// The logic to add NewRegion/NewSubnet columns can be simplified or ensured by the backend
-				setActiveResources(resources);
+			if (data) {
+				setActiveResources(data.active_resources || {});
 				// Restore the user's previous selections
 				const loadedResourcesToPlan = data.resources_to_plan || {};
 				setResourcesToPlan(loadedResourcesToPlan);
 
+				if (data.last_filtered_at && data.user_id) {
+					setFilterMetadata({
+						last_filtered_at: data.last_filtered_at,
+						user_id: data.user_id,
+					});
+				} else {
+					setFilterMetadata(null);
+				}
 			} else {
 				setActiveResources({});
+				setFilterMetadata(null);
 			}
 		} catch (e) {
 			console.error("Failed to fetch active resources", e);
@@ -415,6 +427,7 @@ function HomePageClient() {
 		setExpandedSections({});
 		setLastCompletedStep(""); // Clear automation progress on project change
 		setRiskChangeAlert(null);
+		setFilterMetadata(null);
 		localStorage.removeItem(`geoShieldLastStep_${projectID}`);
 		localStorage.removeItem(`geoShieldPlanCache_${projectID}`);
 	}, [projectID]);
@@ -821,10 +834,6 @@ function HomePageClient() {
 				setLoading(false);
 			}
 
-			// End the automation sequence only at the very last step.
-			if (endpoint === 'migrate' || (endpoint === 'apply' && latestRiskMessage?.currentRiskLevel === 'R3') || (endpoint === 'plan' && latestRiskMessage?.currentRiskLevel === 'R2')) {
-				setIsAutomationRunning(false);
-			}
 		}
 	};
 
@@ -922,6 +931,25 @@ function HomePageClient() {
 		}
 	}, [webSocketLatestMessage]);
 
+	// Effect to check if a cached plan exists for the current selection
+	useEffect(() => {
+		if (Object.keys(resourcesToPlan).length > 0) {
+			const cachedPlanData = localStorage.getItem(`geoShieldPlanCache_${projectID}`);
+			if (cachedPlanData) {
+				try {
+					const parsedCache = JSON.parse(cachedPlanData);
+					const currentPlanKey = getCanonicalJson(resourcesToPlan);
+					if (parsedCache.cacheKey === currentPlanKey) {
+						setHasCachedPlan(true);
+						return;
+					}
+				} catch (e) { /* ignore parsing errors */ }
+			}
+		}
+		setHasCachedPlan(false);
+	}, [resourcesToPlan, projectID]);
+
+
 	const steps = [
 		{ id: "auth", label: "Auth", color: "bg-orange-500" },
 		{ id: "discovered", label: "Discover", color: "bg-blue-500" },
@@ -1013,6 +1041,7 @@ function HomePageClient() {
 									disconnect();
 								} else {
 									connect(projectID, apiKey);
+									setWorkflowMode('auto'); // Set default to auto-workflow on connect
 								}
 							}}
 							disabled={!projectID || !apiKey}
@@ -1169,7 +1198,7 @@ function HomePageClient() {
 						</div>
 					</div>
 
-					<div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+					{workflowMode === 'manual' && (<div className="grid grid-cols-2 lg:grid-cols-5 gap-4 animate-in fade-in duration-300">
 						<button
 							onClick={() => handleManualAction("auth", "POST", undefined, true, "Completed", 45 * 1000)}
 							disabled={loading || isAutomationRunning || workflowMode === 'auto'}
@@ -1317,7 +1346,7 @@ function HomePageClient() {
 								</span>
 							</button>
 						</Link>
-					</div>
+					</div>)}
 				</section>
 
 				<section className="pt-4">
@@ -1452,6 +1481,8 @@ function HomePageClient() {
 									<h2 className="text-lg font-bold text-slate-800">
 										Active Resources
 									</h2>
+								</div>
+								<div className="flex items-center gap-2 pt-1">
 									<button
 										onClick={async () => {
 											// A true force refresh must first re-discover, then re-filter.
@@ -1595,10 +1626,17 @@ function HomePageClient() {
 							</div>
 							{/* --- AUTOMATION CONFIRMATION ROW --- */}
 							{isAutomationRunning && (
-								<div className="mt-6 w-full bg-purple-50 border-2 border-dashed border-purple-200 rounded-2xl p-4 flex flex-col md:flex-row items-center justify-center md:justify-between gap-4">
-									<div className="flex items-center gap-3 text-purple-800 text-sm font-semibold">
-										<svg className="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
-										<span>Please review and confirm the selected resources to continue the automated workflow.</span>
+								<div className="mt-6 w-full bg-purple-50 border-2 border-dashed border-purple-200 rounded-2xl p-4 flex flex-col md:flex-row items-center justify-center md:justify-between gap-4 text-center md:text-left">
+									<div className="flex-grow">
+										<div className="flex items-center justify-center md:justify-start gap-3 text-purple-800 text-sm font-semibold">
+											<svg className="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+											<span>Please review and confirm the selected resources to continue the automated workflow.</span>
+										</div>
+										{filterMetadata && (
+											<p className="text-xs text-purple-500 font-medium mt-1 ml-8">
+												(Resource list is from a cache generated at {new Date(filterMetadata.last_filtered_at).toLocaleString()} by <span className="font-bold">{filterMetadata.user_id}</span>)
+											</p>
+										)}
 									</div>
 									<button
 										onClick={() => continueAutomation(latestRiskMessage?.currentRiskLevel || "")}
@@ -1608,6 +1646,15 @@ function HomePageClient() {
 										<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
 										Confirm & Continue
 									</button>
+								</div>
+							)}
+
+							{hasCachedPlan && (
+								<div className="mt-4 w-full bg-blue-50 border border-blue-200 rounded-xl p-3 flex items-center justify-center gap-3 text-blue-800 text-sm font-semibold">
+									<svg className="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+										<path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+									</svg>
+									<span>A cached plan already exists for this selection. Clicking "View Plan" will be instantaneous.</span>
 								</div>
 							)}
 
