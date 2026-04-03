@@ -67,6 +67,16 @@ function useDebounce<T>(value: T, delay: number): T {
 	return debouncedValue;
 }
 
+// Helper function to create a stable, sorted JSON string for object comparison
+function getCanonicalJson(obj: any): string {
+	if (!obj || typeof obj !== 'object') {
+		return JSON.stringify(obj);
+	}
+	// Create a new object with sorted keys to ensure consistent stringification
+	const sortedObj = Object.keys(obj).sort().reduce((acc, key) => { acc[key] = obj[key]; return acc; }, {} as Record<string, any>);
+	return JSON.stringify(sortedObj);
+}
+
 function HomePageClient() {
 	const searchParams = useSearchParams();
 	const [projectID, setProjectID] = useState("");
@@ -85,6 +95,9 @@ function HomePageClient() {
 		"none" | "auth" | "discovered" | "active" | "plan" | "apply"
 	>("none");
 	const [loading, setLoading] = useState(false);
+	const [workflowMode, setWorkflowMode] = useState<"manual" | "auto">("manual");
+	const [lastCompletedStep, setLastCompletedStep] = useState<string>("");
+	const [riskChangeAlert, setRiskChangeAlert] = useState<string | null>(null);
 	const [isAutomationRunning, setIsAutomationRunning] = useState(false);
 	const [expandedSections, setExpandedSections] = useState<
 		Record<string, boolean>
@@ -127,9 +140,15 @@ function HomePageClient() {
 
 	// Load API key from session storage on mount
 	useEffect(() => {
+		// This effect runs once on initial mount to get the API key.
 		const storedApiKey = sessionStorage.getItem("geoShieldApiKey");
 		if (storedApiKey) {
 			setApiKey(storedApiKey);
+		}
+		// Load last completed step from localStorage
+		const storedLastStep = localStorage.getItem(`geoShieldLastStep_${projectID}`);
+		if (storedLastStep) {
+			setLastCompletedStep(storedLastStep);
 		}
 	}, []);
 
@@ -165,7 +184,9 @@ function HomePageClient() {
 				// The logic to add NewRegion/NewSubnet columns can be simplified or ensured by the backend
 				setActiveResources(resources);
 				// Restore the user's previous selections
-				setResourcesToPlan(data.resources_to_plan || {});
+				const loadedResourcesToPlan = data.resources_to_plan || {};
+				setResourcesToPlan(loadedResourcesToPlan);
+
 			} else {
 				setActiveResources({});
 			}
@@ -392,6 +413,10 @@ function HomePageClient() {
 		setStatus("");
 		setViewMode("none");
 		setExpandedSections({});
+		setLastCompletedStep(""); // Clear automation progress on project change
+		setRiskChangeAlert(null);
+		localStorage.removeItem(`geoShieldLastStep_${projectID}`);
+		localStorage.removeItem(`geoShieldPlanCache_${projectID}`);
 	}, [projectID]);
 
 	useEffect(() => {
@@ -498,6 +523,12 @@ function HomePageClient() {
 						// Resolve with the final status so the caller can use it
 						resolve(data.status);
 					}
+
+					// --- NEW: Explicitly check for failure states ---
+					if (data && typeof data.status === 'string' && (data.status.toLowerCase().includes("failed") || data.status.toLowerCase().includes("error"))) {
+						clearInterval(intervalId);
+						reject(new Error(data.status)); // Reject with the specific error message from the backend
+					}
 				} catch (e) {
 					console.error("Polling check failed:", e);
 					// Don't reject here, allow it to retry until timeout
@@ -511,42 +542,59 @@ function HomePageClient() {
 	// Helper function to introduce a delay
 	const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+	const setAutomationStepCompleted = (stepId: string) => {
+		setLastCompletedStep(stepId);
+		localStorage.setItem(`geoShieldLastStep_${projectID}`, stepId);
+	};
+
 
 	// --- AUTOMATION ENGINE ---
 	const runAutomationSequence = async (riskLevel: string) => {
 		if (!projectID || isAutomationRunning) return;
 		logToServer(`[LOG] AUTOMATION WORKFLOW: Starting for Risk Level: ${riskLevel}`);
+		setRiskChangeAlert(null); // Clear the alert when automation starts
 		setIsAutomationRunning(true);
 		setLoading(true);
 		abortControllerRef.current = new AbortController(); // New controller for automation
 		setStatus(`Automation started for Risk Level ${riskLevel}`);
 
 		try {
+			const stepsOrder = ["auth", "discover", "filter", "plan", "apply", "migrate"];
+			const lastCompletedIndex = stepsOrder.indexOf(lastCompletedStep);
+
 			// R0: Auth
-			if (riskLevel >= "R0") {
+			if (riskLevel >= "R0" && lastCompletedIndex < stepsOrder.indexOf("auth")) {
 				setLoading(true);
 				setStatus("Step 1: Authenticating...");
 				await apiCall("auth", "POST");
-				await pollStatus(
+				const authStatus = await pollStatus(
 					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/auth/status`,
 					"Completed",
 					45 * 1000,
 				);
+				if (authStatus.includes("Failed")) {
+					throw new Error("Authentication failed.");
+				}
+				setAutomationStepCompleted("auth");
 				setViewMode("auth");
 				setStatus("Auth complete. Waiting 7s before next step...");
 				setLoading(false);
 				await delay(7000);
 			}
 
-			if (riskLevel >= "R1") {
+			if (riskLevel >= "R1" && lastCompletedIndex < stepsOrder.indexOf("discover")) {
 				setLoading(true);
 				setStatus("Step 2: Discovering resources...");
 				await apiCall("discover", "POST");
-				await pollStatus(
+				const discoveryStatus = await pollStatus(
 					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/discover/status`,
 					"Discovery completed",
 					5 * 60 * 1000, // 5 minute timeout for discovery
 				);
+				if (discoveryStatus.includes("failed")) {
+					throw new Error("Discovery failed.");
+				}
+				setAutomationStepCompleted("discover");
 				await fetchResources();
 				setViewMode("discovered");
 				setStatus("Discovery complete. Waiting 20s before next step...");
@@ -555,25 +603,45 @@ function HomePageClient() {
 			}
 
 			// R2: R1 actions + Filter -> Plan
-			if (riskLevel >= "R2") {
+			if (riskLevel >= "R2" && lastCompletedIndex < stepsOrder.indexOf("filter")) {
 				setLoading(true);
 				setStatus("Step 3: Filtering critical resources...");
-				await apiCall("filter", "POST");
-				await pollStatus(
-					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/filter/status`,
-					"Filter process completed.",
-					5 * 60 * 1000, // Increased timeout to 5 minutes
-				);
+				const initialFilterResponse = await apiCall("filter", "POST");
+
+				let filterStatus = "";
+				// If the initial call returns a status (e.g., from cache), use it. Otherwise, poll.
+				if (initialFilterResponse?.status?.includes("Filter process completed")) {
+					filterStatus = initialFilterResponse.status;
+				} else {
+					filterStatus = await pollStatus(
+						`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/filter/status`,
+						"Filter process completed", // More generic prefix to catch both cache and fresh runs
+						5 * 60 * 1000,
+					);
+				}
+
+				if (filterStatus.includes("failed")) {
+					throw new Error("Filtering failed.");
+				}
+				setAutomationStepCompleted("filter");
 				await fetchActiveResources();
 				setViewMode("active");
-				setStatus("Please review the filtered resources, make selections, and confirm to proceed.");
-				setLoading(false); // Stop the loader and wait for user confirmation.
-				// The sequence will be continued by the 'Confirm Selection & View Plan' button.
-				return; 
+
+				// If we are continuing from a previous state (e.g. R1->R3), proceed automatically.
+				if (lastCompletedIndex >= 0) {
+					// Directly proceed to the plan step.
+					setStatus("Step 4: Generating Terraform plan...");
+					await handleManualAction("plan", "POST", { resources: resourcesToPlan, workspaceId: "" }, true, "COMPLETED::", 15 * 60 * 1000);
+					setAutomationStepCompleted("plan");
+				} else {
+					setStatus("Please review the filtered resources, make selections, and confirm to proceed.");
+					setLoading(false); // Stop the loader and wait for user confirmation.
+					return;
+				}
 			}
 
 			// R3: R2 actions + Apply
-			if (riskLevel >= "R3") {
+			if (riskLevel >= "R3" && lastCompletedIndex < stepsOrder.indexOf("apply")) {
 				setLoading(true);
 				setStatus("Step 5: Applying Terraform plan...");
 				await apiCall("apply", "POST", { resources: resourcesToPlan, workspaceId: workspaceId });
@@ -582,6 +650,10 @@ function HomePageClient() {
 					"APPLY_COMPLETED::",
 					15 * 60 * 1000,
 				);
+				if (applyStatus.includes("failed")) {
+					throw new Error("Terraform apply failed.");
+				}
+				setAutomationStepCompleted("apply");
 				const finalApplyOutput = applyStatus.substring("APPLY_COMPLETED::".length);
 				setApplyOutput(finalApplyOutput);
 				setViewMode("apply");
@@ -591,15 +663,19 @@ function HomePageClient() {
 			}
 
 			// R4: R3 actions + Migrate
-			if (riskLevel >= "R4") {
+			if (riskLevel >= "R4" && lastCompletedIndex < stepsOrder.indexOf("migrate")) {
 				setLoading(true);
 				setStatus("Step 6: Starting application migration...");
 				await apiCall("migrate", "POST");
-				await pollStatus(
+				const migrateStatus = await pollStatus(
 					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/migrate/status`,
 					"Completed",
 					2 * 60 * 60 * 1000,
 				);
+				if (migrateStatus.includes("Failed")) {
+					throw new Error("Migration failed.");
+				}
+				setAutomationStepCompleted("migrate");
 				setStatus("Application migration complete.");
 				setLoading(false);
 			}
@@ -609,6 +685,10 @@ function HomePageClient() {
 			setIsAutomationRunning(false);
 			setLoading(false);
 			setStatus(`Automation failed: ${error.message}`);
+		} finally {
+			// Ensure that automation state is always reset when the sequence ends.
+			setIsAutomationRunning(false);
+			setLoading(false);
 		}
 	};
 
@@ -619,10 +699,14 @@ function HomePageClient() {
 		try {
 			// This function is called after the user confirms the selection in the 'active' view,
 			// continuing the sequence from the 'plan' step onwards.
-			if (riskLevel >= "R2") {
+			const stepsOrder = ["auth", "discover", "filter", "plan", "apply", "migrate"];
+			const lastCompletedIndex = stepsOrder.indexOf(lastCompletedStep);
+
+			if (riskLevel >= "R2" && lastCompletedIndex < stepsOrder.indexOf("plan")) {
 				setStatus("Step 4: Generating Terraform plan...");
 				// The handleManualAction will now automatically chain to the 'apply' step if needed.
 				await handleManualAction("plan", "POST", { resources: resourcesToPlan, workspaceId: "" }, true, "COMPLETED::", 15 * 60 * 1000); 
+				setAutomationStepCompleted("plan");
 			}
 
 			// The rest of the automation (Apply, Migrate) is now handled by the chaining logic
@@ -646,6 +730,11 @@ function HomePageClient() {
 	// Generic handler for manual button clicks
 	const handleManualAction = async (endpoint: string, method: string, bodyData?: any, poll: boolean = false, completionPrefix: string = "", timeout: number = 0, queryParams: string = "") => {
 		logToServer(`[LOG] MANUAL WORKFLOW: Executing endpoint: ${endpoint}`);
+
+		if (endpoint === 'plan') {
+			logToServer(`[LOG] Frontend cache miss for plan. Requesting new plan from backend.`);
+		}
+
 		setLoading(true);
 		abortControllerRef.current = new AbortController();
 		setStatus(`Executing ${endpoint}...`);
@@ -661,11 +750,12 @@ function HomePageClient() {
 					? 'plan' 
 					: endpoint;
 
-				finalStatus = await pollStatus(
+				const pollResult = await pollStatus(
 					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/${statusEndpoint}/status`,
 					completionPrefix,
 					timeout,
 				);
+				finalStatus = pollResult; // Assign the result for further processing
 			}
 
 			// Step 3: Perform actions after completion
@@ -673,27 +763,40 @@ function HomePageClient() {
 				setStatus("Fetching discovered resources...");
 				await fetchResources();
 				setViewMode('discovered');
+			} else if (endpoint === 'auth') {
+				// When auth is complete, we stay on the auth view to show the status.
+				setViewMode('auth');
 			} else if (endpoint === 'filter') {
 				setStatus("Fetching active resources...");
 				await fetchActiveResources();
 				setViewMode('active');
 			} else if (endpoint === 'plan') {
 				const parts = finalStatus.split("::");
-				setWorkspaceId(parts[1]);
-				setPlanOutput(parts[2]);
+				const newWorkspaceId = parts[1];
+				const newPlanOutput = parts[2];
+
+				setWorkspaceId(newWorkspaceId);
+				setPlanOutput(newPlanOutput);
 				setViewMode('plan');
+
 				// If automation is running, continue to the next step (Apply)
 				if (isAutomationRunning && latestRiskMessage?.currentRiskLevel && latestRiskMessage.currentRiskLevel >= "R3") {
 					setStatus("Plan generated. Waiting 30s before applying...");
 					setLoading(false); // Turn off loader to allow plan review
 					await delay(30000); // Wait before applying
 					// The 'apply' action will set its own loading state.
-					await handleManualAction("apply", "POST", { resources: resourcesToPlan, workspaceId: parts[1] }, true, "APPLY_COMPLETED::", 15 * 60 * 1000);
+					await handleManualAction("apply", "POST", { resources: resourcesToPlan, workspaceId: newWorkspaceId }, true, "APPLY_COMPLETED::", 15 * 60 * 1000);
 				}
 			} else if (endpoint === 'apply') {
 				const finalApplyOutput = finalStatus.substring(completionPrefix.length);
 				setApplyOutput(finalApplyOutput);
 				setViewMode('apply');
+
+				// --- FRONTEND CACHE INVALIDATION ---
+				// The plan has been applied, so the cache is no longer valid.
+				localStorage.removeItem(`geoShieldPlanCache_${projectID}`);
+				logToServer("[LOG] Cleared frontend plan cache after successful apply.");
+
 				// If automation is running for R4, continue to the migrate step
 				if (isAutomationRunning && latestRiskMessage?.currentRiskLevel && latestRiskMessage.currentRiskLevel >= "R4") {
 					setStatus("Apply complete. Waiting 30s before migrating...");
@@ -708,6 +811,11 @@ function HomePageClient() {
 			if (error.message !== "Operation cancelled by user.") {
 				console.error(`Manual action ${endpoint} failed:`, error);
 				setStatus(`Error: ${error.message}`);
+				// If a plan fails, show the detailed error in the plan view.
+				if (endpoint === 'plan') {
+					setPlanOutput(error.message);
+					setViewMode('plan');
+				}
 			}
 		} finally {
 			// Only turn off loading if not in a chained automation step that handles its own loading.
@@ -794,6 +902,7 @@ function HomePageClient() {
 					if (newRiskNum <= currentRiskNum) {
 						return prev;
 					}
+					setRiskChangeAlert(`Risk level has been upgraded to ${newRisk}. Please take Action.`);
 
 					// Otherwise, update with the new (or first) message.
 					return {
@@ -918,12 +1027,40 @@ function HomePageClient() {
 					</div>
 				</header>
 
+				<section className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100">
+					<div className="flex items-center justify-center md:justify-end gap-4">
+						<h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider hidden md:block">Workflow Mode</h3>
+						<div className="flex items-center justify-center gap-3 p-2 rounded-full bg-slate-50 border border-slate-100">
+							<span className={`text-sm font-bold ${workflowMode === 'manual' ? 'text-slate-700' : 'text-slate-400'}`}>Manual</span>
+							<button
+								onClick={() => setWorkflowMode(prev => prev === 'manual' ? 'auto' : 'manual')}
+								disabled={isAutomationRunning}
+								className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 ${workflowMode === 'auto' ? 'bg-red-600' : 'bg-slate-300'}`}
+								role="switch"
+								aria-checked={workflowMode === 'auto'}
+							>
+								<span
+									aria-hidden="true"
+									className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${workflowMode === 'auto' ? 'translate-x-5' : 'translate-x-0'}`}
+								/>
+							</button>
+							<span className={`text-sm font-bold ${workflowMode === 'auto' ? 'text-red-600' : 'text-slate-400'}`}>Auto-Workflow</span>
+						</div>
+					</div>
+				</section>
+
 				{(latestRiskMessage) && (
 					<section className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 animate-in fade-in duration-300">
 						<h2 className="text-lg font-bold text-slate-800 flex items-center gap-2 mb-4">
 							<span className="w-1.5 h-6 bg-red-500 rounded-full" />
 							Latest Global Risk Update
 						</h2>
+						{riskChangeAlert && (
+							<div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 text-sm font-bold rounded-lg flex items-center gap-3">
+								<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+								{riskChangeAlert}
+							</div>
+						)}
 						<div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
 							<div>
 								<p className="text-slate-500">Region:</p>
@@ -962,7 +1099,7 @@ function HomePageClient() {
 							<div className="md:col-span-2 flex items-center justify-end">
 								<button
 									onClick={() => runAutomationSequence(latestRiskMessage?.currentRiskLevel || "")}
-									disabled={isAutomationRunning || isLatestRiskLoading || !latestRiskMessage}
+									disabled={isAutomationRunning || isLatestRiskLoading || !latestRiskMessage || workflowMode === 'manual'}
 									className="bg-red-600 hover:bg-red-700 text-white px-6 py-3 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-red-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
 								>
 									<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
@@ -1035,31 +1172,25 @@ function HomePageClient() {
 						</div>
 					</div>
 
-					<div className="grid grid-cols-2 lg:grid-cols-6 gap-4">
+					<div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
 						<button
 							onClick={() => handleManualAction("auth", "POST", undefined, true, "Completed", 45 * 1000)}
-							disabled={loading || isAutomationRunning}
+							disabled={loading || isAutomationRunning || workflowMode === 'auto'}
 							className="group relative overflow-hidden bg-orange-500 hover:bg-orange-600 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-orange-200 active:scale-95 disabled:opacity-50"
 						>
 							<span className="relative z-10 flex items-center justify-center gap-2">
 								<svg
 									className="w-5 h-5"
 									fill="none"
-									stroke="currentColor"
-									viewBox="0 0 24 24"
-								>
-									<path
-										strokeLinecap="round"
-										strokeLinejoin="round"
-										d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"
-									/>
+									stroke="currentColor" viewBox="0 0 24 24">
+									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
 								</svg>
 								AUTH
 							</span>
 						</button>
 						<button
 							onClick={() => handleManualAction("discover", "POST", undefined, true, "Discovery completed", 5 * 60 * 1000)}
-							disabled={loading || isAutomationRunning}
+							disabled={loading || isAutomationRunning || workflowMode === 'auto'}
 							className="group relative overflow-hidden bg-blue-600 hover:bg-blue-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-blue-200 active:scale-95 disabled:opacity-50"
 						>
 							<span className="relative z-10 flex items-center justify-center gap-2">
@@ -1081,7 +1212,7 @@ function HomePageClient() {
 						</button>
 						<button
 							onClick={() => handleManualAction("filter", "POST", undefined, true, "Filter process completed", 5 * 60 * 1000)}
-							disabled={loading || isAutomationRunning}
+							disabled={loading || isAutomationRunning || workflowMode === 'auto'}
 							className="group relative overflow-hidden bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-emerald-200 active:scale-95 disabled:opacity-50"
 						>
 							<span className="relative z-10 flex items-center justify-center gap-2">
@@ -1102,7 +1233,7 @@ function HomePageClient() {
 						</button>
 						<button
 							onClick={() => handleManualAction("plan", "POST", { resources: resourcesToPlan, workspaceId: "" }, true, "COMPLETED::", 15 * 60 * 1000)}
-							disabled={loading || isAutomationRunning || Object.keys(resourcesToPlan).length === 0}
+							disabled={loading || isAutomationRunning || workflowMode === 'auto' || Object.keys(resourcesToPlan).length === 0}
 							className="group relative overflow-hidden bg-purple-600 hover:bg-purple-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-purple-200 active:scale-95 disabled:opacity-50"
 						>
 							<span className="relative z-10 flex items-center justify-center gap-2">
@@ -1124,7 +1255,7 @@ function HomePageClient() {
 						</button>
 						<button
 							onClick={() => handleManualAction("migrate", "POST", undefined, true, "Completed", 2 * 60 * 60 * 1000)}
-							disabled={loading || isAutomationRunning}
+							disabled={loading || isAutomationRunning || workflowMode === 'auto'}
 							className="group relative overflow-hidden bg-teal-600 hover:bg-teal-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-teal-200 active:scale-95 disabled:opacity-50"
 						>
 							<span className="relative z-10 flex items-center justify-center gap-2">
@@ -1144,10 +1275,10 @@ function HomePageClient() {
 						</button>
 						<Link
 							href={projectID ? `/destroy?project=${projectID}` : "#"}
-							className="lg:col-start-6 h-full"
+							className="h-full"
 						>
 							<button
-								disabled={loading || !projectID || isAutomationRunning}
+								disabled={loading || !projectID || isAutomationRunning || workflowMode === 'auto'}
 								className="w-full h-full group relative overflow-hidden bg-gray-600 hover:bg-gray-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-gray-200 active:scale-95 disabled:opacity-50"
 							>
 								<span className="relative z-10 flex items-center justify-center gap-2">
@@ -1170,10 +1301,10 @@ function HomePageClient() {
 						</Link>
 						<Link
 							href={projectID ? `/message?project=${projectID}` : "#"}
-							className="lg:col-start-1 h-full"
+							className="h-full"
 						>
 							<button
-								disabled={loading || !projectID || isAutomationRunning}
+								disabled={loading || !projectID || isAutomationRunning || workflowMode === 'auto'}
 								className="w-full h-full group relative overflow-hidden bg-cyan-600 hover:bg-cyan-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-cyan-200 active:scale-95 disabled:opacity-50"
 							>
 								<span className="relative z-10 flex items-center justify-center gap-2">
@@ -1336,6 +1467,26 @@ function HomePageClient() {
 											</svg>
 											Force Refresh
 										</span>
+									</button>
+									<button
+										onClick={async () => {
+											setLoading(true);
+											try {
+												setStatus("Clearing plan cache...");
+												await apiCall("plan/cache/clear", "POST");
+												localStorage.removeItem(`geoShieldPlanCache_${projectID}`);
+												setPlanOutput("");
+												setWorkspaceId("");
+												setStatus("Plan cache cleared successfully.");
+											} finally {
+												setLoading(false);
+											}
+										}}
+										disabled={loading || isAutomationRunning}
+										className="group relative overflow-hidden bg-amber-500 hover:bg-amber-600 text-white px-8 py-2 rounded-lg font-bold transition-all hover:shadow-lg hover:shadow-amber-200 active:scale-95 disabled:opacity-50 text-xs whitespace-nowrap"
+										title="Clear any cached Terraform plans for this project, forcing a new plan to be generated on the next run."
+									>
+										Clear Plan Cache
 									</button>
 								</div>
 								<div className="w-full flex flex-col md:flex-row md:items-end gap-4 border-t md:border-t-0 md:border-l border-slate-200 pt-4 md:pt-0 md:pl-6">
@@ -1570,38 +1721,30 @@ function HomePageClient() {
 																className="hover:bg-emerald-50/50 transition-colors"
 															>
 																<td className="px-6 py-4">
-																	{(() => {
-																		const region = row[rows[0]?.indexOf("Region")];
-																		const risk = riskLevels[region];
-																		if (risk) {
-																			return <span className={`font-bold ${getRiskColorClass(risk.current)}`}>{risk.current} &larr; <span className={getRiskColorClass(risk.previous)}>{risk.previous}</span></span>;
+																	<input
+																		type="checkbox"
+																		className="h-4 w-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500"
+																		checked={
+																			resourcesToPlan[service]?.some(
+																				(r) => r[0] === row[0]
+																			) ?? false
 																		}
-																		return (
-																			<input
-																				type="checkbox"
-																				className="h-4 w-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500"
-																				checked={
-																					resourcesToPlan[service]?.some(
-																						(r) => r[0] === row[0]
-																					) ?? false
+																		onChange={(e) => {
+																			setResourcesToPlan((prev) => {
+																				const updated = { ...prev };
+																				if (e.target.checked) {
+																					if (!updated[service]) {
+																						updated[service] = [rows[0]]; // Add header
+																					}
+																					updated[service] = [...updated[service], row];
+																				} else {
+																					updated[service] = updated[service].filter((r) => r[0] !== row[0]);
+																					if (updated[service].length <= 1) delete updated[service];
 																				}
-																				onChange={(e) => {
-																					setResourcesToPlan((prev) => {
-																						const updated = { ...prev };
-																						if (e.target.checked) {
-																							if (!updated[service]) {
-																								updated[service] = [rows[0]]; // Add header
-																							}
-																							updated[service] = [...updated[service], row];
-																						} else {
-																							updated[service] = updated[service].filter((r) => r[0] !== row[0]);
-																							if (updated[service].length <= 1) delete updated[service];
-																						}
-																						return updated;
-																					});
-																				}}
-																			/>);
-																	})()}
+																				return updated;
+																			});
+																		}}
+																	/>
 																</td>
 
 																{row.map((cell, j) => {
@@ -1754,6 +1897,38 @@ function HomePageClient() {
 								<pre className="text-[11px] font-mono text-slate-300 whitespace-pre leading-loose">
 									{applyOutput}
 								</pre>
+							</div>
+						</div>
+					)}
+
+					{/* AUTH VIEW */}
+					{viewMode === 'auth' && (
+						<div className="bg-white p-8 rounded-2xl shadow-sm border border-gray-100 animate-in fade-in duration-300">
+							<div className="flex flex-col md:flex-row items-center gap-6">
+								<div className="w-20 h-20 bg-orange-50 rounded-full flex items-center justify-center text-orange-400 flex-shrink-0">
+									<svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+										<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+									</svg>
+								</div>
+								<div className="text-center md:text-left">
+									<h3 className="text-lg font-bold text-slate-800">
+										Authentication Status
+									</h3>
+									<dl className="mt-2 grid grid-cols-1 md:grid-cols-3 gap-x-6 gap-y-1 text-sm text-slate-600">
+										<div className="flex justify-center md:justify-start gap-2">
+											<dt className="font-semibold text-slate-500">User:</dt>
+											<dd className="font-mono text-orange-700">{apiKey.split('-')[0] || 'Unknown'}</dd>
+										</div>
+										<div className="flex justify-center md:justify-start gap-2">
+											<dt className="font-semibold text-slate-500">Status:</dt>
+											<dd className="font-semibold text-orange-600">{status}</dd>
+										</div>
+										<div className="flex justify-center md:justify-start gap-2">
+											<dt className="font-semibold text-slate-500">Time:</dt>
+											<dd className="font-mono">{new Date().toLocaleString()}</dd>
+										</div>
+									</dl>
+								</div>
 							</div>
 						</div>
 					)}
