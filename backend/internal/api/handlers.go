@@ -326,6 +326,19 @@ func (h *APIHandler) DiscoverGCP(c *gin.Context) {
 	h.discoveryStatus = "Starting discovery process..."
 	h.mu.Unlock()
 
+	// --- Cleanup old discovery files ---
+	if forceRefresh {
+		log.Printf("Force refresh enabled. Cleaning up old discovery files and metadata.")
+		// Remove old .csv files
+		files, _ := filepath.Glob(filepath.Join(rawDataDir, "*.csv"))
+		for _, f := range files {
+			os.Remove(f)
+		}
+		// Also remove the metadata file to ensure a complete refresh
+		os.Remove(metaFilePath)
+		log.Printf("Cleanup complete.")
+	}
+
 	go func() {
 		// Create a cancellable context for this operation
 		ctx, cancel := context.WithCancel(context.Background())
@@ -514,6 +527,16 @@ func (h *APIHandler) FilterGCP(c *gin.Context) {
 	h.mu.Lock()
 	h.filterStatus = "Starting filter process..."
 	h.mu.Unlock()
+
+	// --- Cleanup old filter files ---
+	if forceRefresh {
+		activeDir := filepath.Join(projectDataDir, h.TerraformCriticalResource)
+		log.Printf("Force refresh enabled. Cleaning up old filtered resource files in %s", activeDir)
+		files, _ := filepath.Glob(filepath.Join(activeDir, "*.csv"))
+		for _, f := range files {
+			os.Remove(f)
+		}
+	}
 
 	go func() {
 		ctx := context.Background()

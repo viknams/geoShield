@@ -557,6 +557,7 @@ function HomePageClient() {
 		setLoading(true);
 		abortControllerRef.current = new AbortController(); // New controller for automation
 		setStatus(`Automation started for Risk Level ${riskLevel}`);
+		let isPausedForReview = false;
 
 		try {
 			const stepsOrder = ["auth", "discover", "filter", "plan", "apply", "migrate"];
@@ -627,17 +628,11 @@ function HomePageClient() {
 				await fetchActiveResources();
 				setViewMode("active");
 
-				// If we are continuing from a previous state (e.g. R1->R3), proceed automatically.
-				if (lastCompletedIndex >= 0) {
-					// Directly proceed to the plan step.
-					setStatus("Step 4: Generating Terraform plan...");
-					await handleManualAction("plan", "POST", { resources: resourcesToPlan, workspaceId: "" }, true, "COMPLETED::", 15 * 60 * 1000);
-					setAutomationStepCompleted("plan");
-				} else {
-					setStatus("Please review the filtered resources, make selections, and confirm to proceed.");
-					setLoading(false); // Stop the loader and wait for user confirmation.
-					return;
-				}
+				// Always stop after the filter step to allow for user review and confirmation.
+				setStatus("Please review the filtered resources, make selections, and confirm to proceed.");
+				setLoading(false); // Stop the loader and wait for user confirmation.
+				isPausedForReview = true;
+				return; // The sequence will be continued by the 'Confirm Selection & View Plan' button.
 			}
 
 			// R3: R2 actions + Apply
@@ -686,8 +681,10 @@ function HomePageClient() {
 			setLoading(false);
 			setStatus(`Automation failed: ${error.message}`);
 		} finally {
-			// Ensure that automation state is always reset when the sequence ends.
-			setIsAutomationRunning(false);
+			// Only reset the automation state if the process is not intentionally paused for user input.
+			if (!isPausedForReview) {
+				setIsAutomationRunning(false);
+			}
 			setLoading(false);
 		}
 	};
@@ -1456,8 +1453,12 @@ function HomePageClient() {
 										Active Resources
 									</h2>
 									<button
-										onClick={() => handleManualAction("filter", "POST", undefined, true, "Filter process completed.", 5 * 60 * 1000, "&force_refresh=true")}
-										disabled={loading || isAutomationRunning}
+										onClick={async () => {
+											// A true force refresh must first re-discover, then re-filter.
+											await handleManualAction("discover", "POST", undefined, true, "Discovery completed", 5 * 60 * 1000, "&force_refresh=true");
+											await handleManualAction("filter", "POST", undefined, true, "Filter process completed", 5 * 60 * 1000, "&force_refresh=true");
+										}}
+										disabled={loading || (isAutomationRunning && !status.includes("Please review"))}
 										className="group relative overflow-hidden bg-sky-600 hover:bg-sky-700 text-white px-6 py-2 rounded-lg font-bold transition-all hover:shadow-lg hover:shadow-sky-200 active:scale-95 disabled:opacity-50 text-xs whitespace-nowrap"
 										title="Force a new filter run, ignoring any cached data."
 									>
@@ -1482,7 +1483,7 @@ function HomePageClient() {
 												setLoading(false);
 											}
 										}}
-										disabled={loading || isAutomationRunning}
+										disabled={loading || (isAutomationRunning && !status.includes("Please review"))}
 										className="group relative overflow-hidden bg-amber-500 hover:bg-amber-600 text-white px-8 py-2 rounded-lg font-bold transition-all hover:shadow-lg hover:shadow-amber-200 active:scale-95 disabled:opacity-50 text-xs whitespace-nowrap"
 										title="Clear any cached Terraform plans for this project, forcing a new plan to be generated on the next run."
 									>
@@ -1591,23 +1592,25 @@ function HomePageClient() {
 										</button>
 									</div>
 								</div>
-								{isAutomationRunning && (
-									<div className="mt-6 flex flex-col items-center justify-center gap-4">
-										<div className="flex items-center gap-2 bg-yellow-50 border border-yellow-200 text-yellow-700 text-xs font-semibold px-4 py-2 rounded-lg">
-											<svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
-											<span>Please ensure all critical resources are selected before proceeding.</span>
-										</div>
-										<button
-											onClick={() => continueAutomation(latestRiskMessage?.currentRiskLevel || "")}
-											disabled={loading || Object.keys(resourcesToPlan).length === 0}
-											className="bg-purple-600 hover:bg-purple-700 text-white px-6 py-3 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-purple-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-3 text-base"
-										>
-											<svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-											Confirm Selection & View Plan
-										</button>
-									</div>
-								)}
 							</div>
+							{/* --- AUTOMATION CONFIRMATION ROW --- */}
+							{isAutomationRunning && (
+								<div className="mt-6 w-full bg-purple-50 border-2 border-dashed border-purple-200 rounded-2xl p-4 flex flex-col md:flex-row items-center justify-center md:justify-between gap-4">
+									<div className="flex items-center gap-3 text-purple-800 text-sm font-semibold">
+										<svg className="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+										<span>Please review and confirm the selected resources to continue the automated workflow.</span>
+									</div>
+									<button
+										onClick={() => continueAutomation(latestRiskMessage?.currentRiskLevel || "")}
+										disabled={loading || Object.keys(resourcesToPlan).length === 0}
+										className="bg-purple-600 hover:bg-purple-700 text-white px-5 py-2.5 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-purple-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 text-sm flex-shrink-0"
+									>
+										<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+										Confirm & Continue
+									</button>
+								</div>
+							)}
+
 							{Object.entries(activeResources).map(([service, rows]) => {
 								const sectionKey = `active_${service}`;
 								const isExpanded = expandedSections[sectionKey];
@@ -1845,7 +1848,7 @@ function HomePageClient() {
 									</button>
 									<button
 										onClick={() => handleManualAction("apply", "POST", { resources: resourcesToPlan, workspaceId: workspaceId }, true, "APPLY_COMPLETED::", 15 * 60 * 1000)}
-										disabled={loading}
+										disabled={loading || (isAutomationRunning && latestRiskMessage?.currentRiskLevel === 'R2')}
 										className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-md text-sm font-bold transition-all disabled:opacity-50 active:scale-95 flex items-center gap-2"
 									>
 										<svg
