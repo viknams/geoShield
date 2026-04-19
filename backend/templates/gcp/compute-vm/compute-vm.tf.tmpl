@@ -3,6 +3,7 @@ module "instance" {
   project_id = var.project_id
   zone       = var.zone
   name       = var.instance_name
+  tags       = ["web-app"]
   network_interfaces = [{
     network    = "{{ .Network }}"
     subnetwork = "{{ .Subnetwork }}"

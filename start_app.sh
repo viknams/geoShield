@@ -23,7 +23,7 @@ echo "⚙️ Starting Backend..."
 
 #export GCP_IMPERSONATE_EMAIL=`gcloud auth list --filter=status:ACTIVE --format="value(account)"`
 
-export GCP_IMPERSONATE_EMAIL=tfe-svc@gemini-poc-presales.iam.gserviceaccount.com
+# export GCP_IMPERSONATE_EMAIL=tfe-svc@gemini-poc-presales.iam.gserviceaccount.com
 
 cd ${APP_DIR}/backend || exit
  
