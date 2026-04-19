@@ -74,6 +74,7 @@ func main() {
 		ManagedByLabel:         os.Getenv("MANAGED_BY_LABEL"),
 		DefaultRegion:          os.Getenv("DEFAULT_GCP_REGION"),
 		AppMigrationScriptPath: os.Getenv("APP_MIGRATION_SCRIPT_PATH"),
+		CutoverScriptPath:      os.Getenv("APP_CUTOVER_SCRIPT_PATH"),
 		// Populate new configurable defaults
 		DefaultVMNetwork:        os.Getenv("DEFAULT_VM_NETWORK"),
 		DefaultVMSubnetwork:     os.Getenv("DEFAULT_VM_SUBNETWORK"),
@@ -147,6 +148,10 @@ func main() {
 		// Migration
 		v1.POST("/migrate", h.AppMigration)
 		v1.GET("/migrate/status", h.GetMigrationStatus)
+
+		// Cutover
+		v1.POST("/cutover", h.Cutover)
+		v1.GET("/cutover/status", h.GetCutoverStatus)
 
 		// Client-side logging
 		v1.POST("/log", h.LogFrontendMessage)

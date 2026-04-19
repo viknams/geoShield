@@ -80,7 +80,9 @@ function getCanonicalJson(obj: any): string {
 function HomePageClient() {
 	const searchParams = useSearchParams();
 	const [projectID, setProjectID] = useState("");
-	const [status, setStatus] = useState("");
+	const [status, setStatus] = useState("Ready");
+	const [migrationStatus, setMigrationStatus] = useState("");
+	const [cutoverStatus, setCutoverStatus] = useState("");
 	const [planOutput, setPlanOutput] = useState("");
 	const [applyOutput, setApplyOutput] = useState("");
 	const [workspaceId, setWorkspaceId] = useState("");
@@ -92,7 +94,7 @@ function HomePageClient() {
 		Record<string, string[][]>
 	>({});
 	const [viewMode, setViewMode] = useState<
-		"none" | "auth" | "discovered" | "active" | "plan" | "apply"
+		"none" | "auth" | "discovered" | "active" | "plan" | "apply" | "migrate"
 	>("none");
 	const [loading, setLoading] = useState(false);
 	const [workflowMode, setWorkflowMode] = useState<"manual" | "auto">("manual");
@@ -494,7 +496,7 @@ function HomePageClient() {
 		}
 	};
 
-	const pollStatus = (statusUrl: string, completionPrefix: string, timeout: number) => {
+	const pollStatus = (statusUrl: string, completionPrefix: string, timeout: number, statusSetter: (status: string) => void) => {
 		return new Promise<string>((resolve, reject) => {
 			const startTime = Date.now();
 			const signal = abortControllerRef.current?.signal;
@@ -529,7 +531,7 @@ function HomePageClient() {
 						},
 					});
 					const data = await res.json();
-					if (data && data.status) setStatus(data.status);
+					if (data && data.status) statusSetter(data.status);
 
 					if (data && typeof data.status === 'string' && data.status.startsWith(completionPrefix)) {
 						clearInterval(intervalId);
@@ -585,6 +587,7 @@ function HomePageClient() {
 					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/auth/status`,
 					"Completed",
 					45 * 1000,
+					setStatus,
 				);
 				if (authStatus.includes("Failed")) {
 					throw new Error("Authentication failed.");
@@ -604,6 +607,7 @@ function HomePageClient() {
 					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/discover/status`,
 					"Discovery completed",
 					5 * 60 * 1000, // 5 minute timeout for discovery
+					setStatus,
 				);
 				if (discoveryStatus.includes("failed")) {
 					throw new Error("Discovery failed.");
@@ -631,6 +635,7 @@ function HomePageClient() {
 						`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/filter/status`,
 						"Filter process completed", // More generic prefix to catch both cache and fresh runs
 						5 * 60 * 1000,
+						setStatus,
 					);
 				}
 
@@ -657,6 +662,7 @@ function HomePageClient() {
 					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/plan/status`, // Still polls plan status
 					"APPLY_COMPLETED::",
 					15 * 60 * 1000,
+					setStatus,
 				);
 				if (applyStatus.includes("failed")) {
 					throw new Error("Terraform apply failed.");
@@ -679,6 +685,7 @@ function HomePageClient() {
 					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/migrate/status`,
 					"Completed",
 					2 * 60 * 60 * 1000,
+					setMigrationStatus,
 				);
 				if (migrateStatus.includes("Failed")) {
 					throw new Error("Migration failed.");
@@ -747,7 +754,15 @@ function HomePageClient() {
 
 		setLoading(true);
 		abortControllerRef.current = new AbortController();
-		setStatus(`Executing ${endpoint}...`);
+		
+		let statusSetter = setStatus;
+		if (endpoint === 'migrate') {
+			statusSetter = setMigrationStatus;
+		} else if (endpoint === 'cutover') {
+			statusSetter = setCutoverStatus;
+		}
+
+		statusSetter(`Executing ${endpoint}...`);
 		try {
 			// Step 1: Make the initial API call
 			await apiCall(endpoint, method, bodyData, abortControllerRef.current.signal, queryParams);
@@ -764,6 +779,7 @@ function HomePageClient() {
 					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/${statusEndpoint}/status`,
 					completionPrefix,
 					timeout,
+					statusSetter
 				);
 				finalStatus = pollResult; // Assign the result for further processing
 			}
@@ -821,7 +837,7 @@ function HomePageClient() {
 			// Only log errors that are not due to user cancellation.
 			if (error.message !== "Operation cancelled by user.") {
 				console.error(`Manual action ${endpoint} failed:`, error);
-				setStatus(`Error: ${error.message}`);
+				statusSetter(`Error: ${error.message}`);
 				// If a plan fails, show the detailed error in the plan view.
 				if (endpoint === 'plan') {
 					setPlanOutput(error.message);
@@ -957,6 +973,7 @@ function HomePageClient() {
 		{ id: "active", label: "Filter", color: "bg-emerald-500" },
 		{ id: "plan", label: "Plan", color: "bg-purple-500" },
 		{ id: "apply", label: "Apply", color: "bg-red-500" },
+		{ id: "migrate", label: "Migrate", color: "bg-teal-500" },
 	];
 
 	return (
@@ -1284,7 +1301,7 @@ function HomePageClient() {
 							</span>
 						</button>
 						<button
-							onClick={() => handleManualAction("migrate", "POST", undefined, true, "Completed", 2 * 60 * 60 * 1000)}
+							onClick={() => setViewMode('migrate')}
 							disabled={loading || isAutomationRunning}
 							className="group relative overflow-hidden bg-teal-600 hover:bg-teal-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-teal-200 active:scale-95 disabled:opacity-50"
 						>
@@ -1983,6 +2000,72 @@ function HomePageClient() {
 										</div>
 									</dl>
 								</div>
+							</div>
+						</div>
+					)}
+
+					{/* MIGRATE VIEW */}
+					{viewMode === 'migrate' && (
+						<div className="bg-white p-8 rounded-2xl shadow-sm border border-gray-100 animate-in fade-in duration-300">
+							<div className="flex flex-col items-center gap-6">
+								<div className="w-20 h-20 bg-teal-50 rounded-full flex items-center justify-center text-teal-400 flex-shrink-0">
+									<svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+										<path strokeLinecap="round" strokeLinejoin="round" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+									</svg>
+								</div>
+								<div className="text-center">
+									<h3 className="text-lg font-bold text-slate-800">
+										Application Migration & Cutover
+									</h3>
+									<p className="mt-1 text-sm text-slate-500 max-w-2xl">
+										This process will initiate the data synchronization and application cutover to the new virtual machine. This is the final step in the migration process. Please ensure all previous steps have been completed successfully.
+									</p>
+								</div>
+
+								<div className="w-full space-y-4">
+									{/* Data Migration Section */}
+									<div className="bg-slate-50 p-4 rounded-lg border border-slate-200">
+										<div className="flex items-center justify-between">
+											<div>
+												<h4 className="font-bold text-slate-700">1. Data Migration</h4>
+												<p className="text-xs text-slate-500">Back up and restore the database to the new environment.</p>
+											</div>
+											<button
+												onClick={() => handleManualAction("migrate", "POST", undefined, true, "Completed", 2 * 60 * 60 * 1000)}
+												disabled={loading || isAutomationRunning}
+												className="group relative overflow-hidden bg-teal-600 hover:bg-teal-700 text-white px-4 py-2 rounded-lg font-bold transition-all text-sm"
+											>
+												Start Data Migration
+											</button>
+										</div>
+										{migrationStatus && <p className="text-xs text-slate-500 mt-2">Status: <span className="font-semibold text-teal-700">{migrationStatus}</span></p>}
+									</div>
+
+									{/* Cutover Section */}
+									<div className="bg-slate-50 p-4 rounded-lg border border-slate-200">
+										<div className="flex items-center justify-between">
+											<div>
+												<h4 className="font-bold text-slate-700">2. Final Cutover</h4>
+												<p className="text-xs text-slate-500">Point the load balancer to the new virtual machine endpoint.</p>
+											</div>
+											<button
+												onClick={() => handleManualAction("cutover", "POST", undefined, true, "Completed", 10 * 60 * 1000)}
+												disabled={loading || isAutomationRunning}
+												className="group relative overflow-hidden bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg font-bold transition-all text-sm"
+											>
+												Start Cutover
+											</button>
+										</div>
+										{cutoverStatus && <p className="text-xs text-slate-500 mt-2">Status: <span className="font-semibold text-indigo-700">{cutoverStatus}</span></p>}
+									</div>
+								</div>
+
+								<button
+									onClick={() => setViewMode('none')}
+									className="text-sm font-bold text-slate-500 hover:text-slate-700 mt-4"
+								>
+									Back
+								</button>
 							</div>
 						</div>
 					)}

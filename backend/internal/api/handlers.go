@@ -54,6 +54,7 @@ type APIHandler struct {
 	ManagedByLabel         string
 	DefaultRegion          string
 	AppMigrationScriptPath string
+	CutoverScriptPath      string
 	// New configurable defaults for resource mapping
 	DefaultVMNetwork             string
 	DefaultVMSubnetwork          string
@@ -80,6 +81,7 @@ type APIHandler struct {
 	filterStatus    string
 	planStatus      string
 	migrationStatus string
+	cutoverStatus   string
 
 	// For Cancellation
 	runningCmdLock sync.Mutex
@@ -211,6 +213,12 @@ func (h *APIHandler) GetMigrationStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": h.migrationStatus})
 }
 
+func (h *APIHandler) GetCutoverStatus(c *gin.Context) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	c.JSON(http.StatusOK, gin.H{"status": h.cutoverStatus})
+}
+
 func (h *APIHandler) CancelOperation(c *gin.Context) {
 	h.mu.Lock()
 	if h.cancelFunc != nil {
@@ -223,6 +231,7 @@ func (h *APIHandler) CancelOperation(c *gin.Context) {
 		h.discoveryStatus = "Operation cancelled by user."
 		h.filterStatus = "Operation cancelled by user."
 		h.migrationStatus = "Operation cancelled by user."
+		h.cutoverStatus = "Operation cancelled by user."
 		h.mu.Unlock()
 
 		c.JSON(http.StatusOK, gin.H{"status": "Cancellation signal sent successfully."})
@@ -258,6 +267,7 @@ func (h *APIHandler) CancelOperation(c *gin.Context) {
 		h.discoveryStatus = "Operation cancelled by user."
 		h.filterStatus = "Operation cancelled by user."
 		h.migrationStatus = "Operation cancelled by user."
+		h.cutoverStatus = "Operation cancelled by user."
 		h.mu.Unlock()
 
 		c.JSON(http.StatusOK, gin.H{"status": "Cancellation signal sent successfully."})
@@ -2315,6 +2325,53 @@ func (h *APIHandler) AppMigration(c *gin.Context) {
 		return
 	} else {
 		c.JSON(http.StatusOK, gin.H{"status": "App migration script started."})
+	}
+}
+
+func (h *APIHandler) Cutover(c *gin.Context) {
+	h.mu.Lock()
+	h.cutoverStatus = "Starting cutover script..."
+	h.mu.Unlock()
+
+	go func() {
+		if h.CutoverScriptPath == "" {
+			errMsg := "Failed: Cutover script path is not configured on the server."
+			log.Println("Error:", errMsg)
+			h.mu.Lock()
+			h.cutoverStatus = errMsg
+			h.mu.Unlock()
+			return
+		}
+
+		scriptPath := h.CutoverScriptPath
+		scriptDir := filepath.Dir(scriptPath)
+		cmd := exec.Command("/bin/sh", scriptPath)
+		cmd.Dir = scriptDir // Set the working directory
+
+		var out bytes.Buffer
+		var stderr bytes.Buffer
+		cmd.Stdout = &out
+		cmd.Stderr = &stderr
+
+		err := cmd.Run()
+
+		h.mu.Lock()
+		defer h.mu.Unlock()
+
+		if err != nil {
+			h.cutoverStatus = fmt.Sprintf("Failed: %v\n%s", err, stderr.String())
+		} else {
+			h.cutoverStatus = fmt.Sprintf("Completed: %s", out.String())
+		}
+	}()
+
+	// Check for configuration error before returning OK
+	if h.CutoverScriptPath == "" {
+		errMsg := "Cutover script path is not configured on the server."
+		c.JSON(http.StatusInternalServerError, gin.H{"error": errMsg})
+		return
+	} else {
+		c.JSON(http.StatusOK, gin.H{"status": "Cutover script started."})
 	}
 }
 

@@ -16,10 +16,10 @@ cd /app
 # 3. Create the .env file from Terraform variables
 mkdir -p instance
 cat <<EOF > /app/instance/.env
-DB_USER=
-DB_PASS="pass-vikram"
-DB_NAME="db-vikram"
-INSTANCE_CONNECTION_NAME="connection-string"
+DB_USER="library"
+DB_PASS="library@2026"
+DB_NAME="library_db"
+INSTANCE_CONNECTION_NAME="geoshield-demo:asia-south1:my-lib-instance"
 EOF
 
 # 4. Set permissions
