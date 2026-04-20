@@ -94,7 +94,7 @@ function HomePageClient() {
 		Record<string, string[][]>
 	>({});
 	const [viewMode, setViewMode] = useState<
-		"none" | "auth" | "discovered" | "active" | "plan" | "apply" | "migrate"
+		"none" | "auth" | "discovered" | "active" | "plan" | "apply" | "migrate" | "cutover"
 	>("none");
 	const [loading, setLoading] = useState(false);
 	const [workflowMode, setWorkflowMode] = useState<"manual" | "auto">("manual");
@@ -575,7 +575,7 @@ function HomePageClient() {
 		let isPausedForReview = false;
 
 		try {
-			const stepsOrder = ["auth", "discover", "filter", "plan", "apply", "migrate"];
+			const stepsOrder = ["auth", "discover", "filter", "plan", "apply", "migrate", "cutover"];
 			const lastCompletedIndex = stepsOrder.indexOf(lastCompletedStep);
 
 			// R0: Auth
@@ -716,7 +716,7 @@ function HomePageClient() {
 		try {
 			// This function is called after the user confirms the selection in the 'active' view,
 			// continuing the sequence from the 'plan' step onwards.
-			const stepsOrder = ["auth", "discover", "filter", "plan", "apply", "migrate"];
+			const stepsOrder = ["auth", "discover", "filter", "plan", "apply", "migrate", "cutover"];
 			const lastCompletedIndex = stepsOrder.indexOf(lastCompletedStep);
 
 			if (riskLevel >= "R2" && lastCompletedIndex < stepsOrder.indexOf("plan")) {
@@ -745,7 +745,7 @@ function HomePageClient() {
 	}
 
 	// Generic handler for manual button clicks
-	const handleManualAction = async (endpoint: string, method: string, bodyData?: any, poll: boolean = false, completionPrefix: string = "", timeout: number = 0, queryParams: string = "") => {
+	const handleManualAction = async (endpoint: string, method: string, bodyData?: any, poll: boolean = false, completionPrefix: string = "", timeout: number = 0, queryParams: string = ""): Promise<string> => {
 		logToServer(`[LOG] MANUAL WORKFLOW: Executing endpoint: ${endpoint}`);
 
 		if (endpoint === 'plan') {
@@ -771,25 +771,24 @@ function HomePageClient() {
 		}
 
 		statusSetter(`Executing ${endpoint}...`);
+		let finalStatus = "";
 		try {
 			// Step 1: Make the initial API call
 			await apiCall(endpoint, method, bodyData, abortControllerRef.current.signal, queryParams);
 
 			// Step 2: Poll for completion if required
-			let finalStatus = "";
 			if (poll) {
 				// All terraform operations (plan, apply, destroy) use the same status endpoint
 				const statusEndpoint = (endpoint === 'plan' || endpoint === 'apply' || endpoint === 'destroy') 
 					? 'plan' 
 					: endpoint;
 
-				const pollResult = await pollStatus(
+				finalStatus = await pollStatus(
 					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/${statusEndpoint}/status`,
 					completionPrefix,
 					timeout,
 					statusSetter
 				);
-				finalStatus = pollResult; // Assign the result for further processing
 			}
 
 			// Step 3: Perform actions after completion
@@ -831,12 +830,34 @@ function HomePageClient() {
 				localStorage.removeItem(`geoShieldPlanCache_${projectID}`);
 				logToServer("[LOG] Cleared frontend plan cache after successful apply.");
 
-				// If automation is running for R4, continue to the migrate step
+				// If automation is running for R4+, continue to the migrate step
 				if (isAutomationRunning && latestRiskMessage?.currentRiskLevel && latestRiskMessage.currentRiskLevel >= "R4") {
 					setStatus("Apply complete. Waiting 30s before migrating...");
 					setLoading(false); // Turn off loader during the delay
 					await delay(30000);
-					await handleManualAction("migrate", "POST", undefined, true, "Completed", 2 * 60 * 60 * 1000);
+
+					setViewMode('migrate');
+					const migrationStatus = await handleManualAction("migrate", "POST", undefined, true, "Migration Complete", 2 * 60 * 60 * 1000);
+					
+					if (migrationStatus.includes("Migration Complete")) {
+						setAutomationStepCompleted("migrate");
+						if (latestRiskMessage.currentRiskLevel === "R4") {
+							setStatus("Migration complete. Please review and trigger Cutover manually.");
+							setIsAutomationRunning(false); // Stop automation to allow manual action
+							setLoading(false);
+						} else if (latestRiskMessage.currentRiskLevel === "R5") {
+							setStatus("Migration complete. Waiting 45s before automatic cutover...");
+							setLoading(false);
+							await delay(45000);
+							setLoading(true);
+							await handleManualAction("cutover", "POST", undefined, true, "Cutover complete", 10 * 60 * 1000);
+							setAutomationStepCompleted("cutover");
+						}
+					}
+				}
+			} else if (endpoint === 'migrate') {
+				if (finalStatus.includes("Migration Complete")) {
+					setStatus("Migration complete. Ready for cutover.");
 				}
 			}
 
@@ -852,14 +873,17 @@ function HomePageClient() {
 					setViewMode('plan');
 				}
 			}
+			throw error; // Rethrow to notify the caller of the failure
 		} finally {
 			// Only turn off loading if not in a chained automation step that handles its own loading.
 			const isChainedPlan = isAutomationRunning && endpoint === 'plan' && latestRiskMessage?.currentRiskLevel && latestRiskMessage.currentRiskLevel >= "R3";
-			if (!isChainedPlan) {
+			const isChainedApply = isAutomationRunning && endpoint === 'apply' && latestRiskMessage?.currentRiskLevel && latestRiskMessage.currentRiskLevel >= "R4";
+
+			if (!isChainedPlan && !isChainedApply) {
 				setLoading(false);
 			}
-
 		}
+		return finalStatus;
 	};
 
 	const handleCancel = async () => {
@@ -982,6 +1006,7 @@ function HomePageClient() {
 		{ id: "plan", label: "Plan", color: "bg-purple-500" },
 		{ id: "apply", label: "Apply", color: "bg-red-500" },
 		{ id: "migrate", label: "Migrate", color: "bg-teal-500" },
+		{ id: "cutover", label: "Cutover", color: "bg-indigo-500" },
 	];
 
 	return (
@@ -1326,6 +1351,28 @@ function HomePageClient() {
 										d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
 								</svg>
 								APP MIGRATION
+							</span>
+						</button>
+						<button
+							onClick={() => handleManualAction("cutover", "POST", undefined, true, "Cutover complete", 10 * 60 * 1000)}
+							disabled={loading || isAutomationRunning}
+							className="group relative overflow-hidden bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-indigo-200 active:scale-95 disabled:opacity-50"
+						>
+							<span className="relative z-10 flex items-center justify-center gap-2">
+								<svg
+									className="w-5 h-5"
+									fill="none"
+									stroke="currentColor"
+									viewBox="0 0 24 24"
+								>
+									<path
+										strokeLinecap="round"
+										strokeLinejoin="round"
+										strokeWidth={2}
+										d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"
+									/>
+								</svg>
+								CUTOVER
 							</span>
 						</button>
 						<Link
