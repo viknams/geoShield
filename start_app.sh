@@ -47,11 +47,15 @@ fi
 PUBLIC_IP=$(curl -s ifconfig.me)
 
 # BEST: use localhost (stable)
-NEXT_PUBLIC_API_URL=http://${PUBLIC_IP}:${BACKEND_PORT} npm run build
+export NEXT_PUBLIC_API_URL=http://${PUBLIC_IP}:${BACKEND_PORT} 
+export NEXT_PUBLIC_WS_URL=ws://${PUBLIC_IP}:${BACKEND_PORT} 
+
+npm run build
  
 nohup npm start -- --port ${FRONTEND_PORT}> ${APP_DIR}/frontend/frontend.log 2>&1 &
  
 echo "✅ Frontend running on port ${FRONTEND_PORT}"
+ 
  
 # =========================
 # 🌐 Show Public Access URL

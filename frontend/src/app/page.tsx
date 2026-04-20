@@ -832,32 +832,31 @@ function HomePageClient() {
 
 				// If automation is running for R4+, continue to the migrate step
 				if (isAutomationRunning && latestRiskMessage?.currentRiskLevel && latestRiskMessage.currentRiskLevel >= "R4") {
-					setStatus("Apply complete. Waiting 30s before migrating...");
-					setLoading(false); // Turn off loader during the delay
-					await delay(30000);
-
+					// Open the migration view first
 					setViewMode('migrate');
-					const migrationStatus = await handleManualAction("migrate", "POST", undefined, true, "Migration Complete", 2 * 60 * 60 * 1000);
-					
-					if (migrationStatus.includes("Migration Complete")) {
-						setAutomationStepCompleted("migrate");
-						if (latestRiskMessage.currentRiskLevel === "R4") {
-							setStatus("Migration complete. Please review and trigger Cutover manually.");
-							setIsAutomationRunning(false); // Stop automation to allow manual action
-							setLoading(false);
-						} else if (latestRiskMessage.currentRiskLevel === "R5") {
-							setStatus("Migration complete. Waiting 45s before automatic cutover...");
-							setLoading(false);
-							await delay(45000);
-							setLoading(true);
-							await handleManualAction("cutover", "POST", undefined, true, "Cutover complete", 10 * 60 * 1000);
-							setAutomationStepCompleted("cutover");
-						}
-					}
+					setStatus("App Migration view opened. Starting data migration in 7 seconds...");
+					await delay(7000); // Wait for 7 seconds as requested
+
+					// Now, trigger the migration with a loader
+					setLoading(true);
+					await handleManualAction("migrate", "POST", undefined, true, "Migration Complete", 2 * 60 * 60 * 1000);
 				}
 			} else if (endpoint === 'migrate') {
 				if (finalStatus.includes("Migration Complete")) {
-					setStatus("Migration complete. Ready for cutover.");
+					setLoading(false); // Turn off loader once migration is complete
+					setAutomationStepCompleted("migrate");
+
+					// Handle next steps for R4 and R5 automation after migration.
+					if (isAutomationRunning && latestRiskMessage?.currentRiskLevel === "R4") {
+						setStatus("Migration complete. Please review and trigger Cutover manually.");
+						setIsAutomationRunning(false); // Stop automation to allow manual action.
+					} else if (isAutomationRunning && latestRiskMessage?.currentRiskLevel === "R5") {
+						setStatus("Migration complete. Waiting 45s before automatic cutover...");
+						await delay(45000);
+						setLoading(true); // Show loader for the cutover step
+						await handleManualAction("cutover", "POST", undefined, true, "Cutover complete", 10 * 60 * 1000);
+						setAutomationStepCompleted("cutover");
+					}
 				}
 			}
 
@@ -1351,28 +1350,6 @@ function HomePageClient() {
 										d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
 								</svg>
 								APP MIGRATION
-							</span>
-						</button>
-						<button
-							onClick={() => handleManualAction("cutover", "POST", undefined, true, "Cutover complete", 10 * 60 * 1000)}
-							disabled={loading || isAutomationRunning}
-							className="group relative overflow-hidden bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-indigo-200 active:scale-95 disabled:opacity-50"
-						>
-							<span className="relative z-10 flex items-center justify-center gap-2">
-								<svg
-									className="w-5 h-5"
-									fill="none"
-									stroke="currentColor"
-									viewBox="0 0 24 24"
-								>
-									<path
-										strokeLinecap="round"
-										strokeLinejoin="round"
-										strokeWidth={2}
-										d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"
-									/>
-								</svg>
-								CUTOVER
 							</span>
 						</button>
 						<Link
