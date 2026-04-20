@@ -12,11 +12,8 @@ module "db" {
   database_version = "{{ .DBVersion }}"
   tier             = "{{ if .Tier }}{{ .Tier }}{{ else }}db-custom-2-7680{{ end }}"
   deletion_protection = {{ .DeletionProtection }}
+  ipv4_enabled     = true
 
-  ip_configuration {
-    ipv4_enabled    = true
-    private_network = data.google_compute_network.private_network.id
-  }
 
   databases = ["{{ if .DatabaseName }}{{ .DatabaseName }}{{ else }}library_db{{ end }}"]
 
