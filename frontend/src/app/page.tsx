@@ -757,9 +757,17 @@ function HomePageClient() {
 		
 		let statusSetter = setStatus;
 		if (endpoint === 'migrate') {
-			statusSetter = setMigrationStatus;
+			setMigrationStatus(""); // Clear previous status
+			statusSetter = (newStatus: string) => {
+				setStatus(newStatus);
+				setMigrationStatus(newStatus);
+			};
 		} else if (endpoint === 'cutover') {
-			statusSetter = setCutoverStatus;
+			setCutoverStatus(""); // Clear previous status
+			statusSetter = (newStatus: string) => {
+				setStatus(newStatus);
+				setCutoverStatus(newStatus);
+			};
 		}
 
 		statusSetter(`Executing ${endpoint}...`);
