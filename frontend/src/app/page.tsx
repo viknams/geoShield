@@ -694,6 +694,21 @@ function HomePageClient() {
 				setStatus("Application migration complete.");
 				setLoading(false);
 			}
+
+			// --- NEW: Handle R4 -> R5 escalation after migration is already complete ---
+			if (riskLevel === "R5" && lastCompletedStep === "migrate") {
+				logToServer("[LOG] AUTOMATION WORKFLOW: Detected R5 escalation after R4 migration. Initiating automatic cutover.");
+				setStatus("R5 Escalation: Waiting 45s before automatic cutover...");
+				setLoading(false); // Loader off during the wait
+				await delay(45000);
+
+				setLoading(true); // Loader on for the cutover
+				await handleManualAction("cutover", "POST", undefined, true, "Completed", 10 * 60 * 1000);
+				setAutomationStepCompleted("cutover");
+				setStatus("Automatic cutover for R5 complete.");
+				setLoading(false);
+				// End of the line for R5 automation
+			}
 			setStatus(`Automation completed for Risk Level ${riskLevel}.`);
 		} catch (error: any) {
 			// If any step fails, ensure the loader is turned off.
@@ -841,6 +856,7 @@ function HomePageClient() {
 					// Open the migration view first
 					setViewMode('migrate');
 					setStatus("App Migration view opened. Starting data migration in 7 seconds...");
+					setLoading(false); // Turn off loader during the 7-second informational wait.
 					await delay(7000); // Wait for 7 seconds as requested
 
 					// Now, trigger the migration with a loader
@@ -880,13 +896,7 @@ function HomePageClient() {
 			}
 			throw error; // Rethrow to notify the caller of the failure
 		} finally {
-			// Only turn off loading if not in a chained automation step that handles its own loading.
-			const isChainedPlan = isAutomationRunning && endpoint === 'plan' && latestRiskMessage?.currentRiskLevel && latestRiskMessage.currentRiskLevel >= "R3";
-			const isChainedApply = isAutomationRunning && endpoint === 'apply' && latestRiskMessage?.currentRiskLevel && latestRiskMessage.currentRiskLevel >= "R4";
-
-			if (!isChainedPlan && !isChainedApply) {
-				setLoading(false);
-			}
+			setLoading(false);
 		}
 		return finalStatus;
 	};
