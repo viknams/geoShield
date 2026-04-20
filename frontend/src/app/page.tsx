@@ -830,6 +830,12 @@ function HomePageClient() {
 				localStorage.removeItem(`geoShieldPlanCache_${projectID}`);
 				logToServer("[LOG] Cleared frontend plan cache after successful apply.");
 
+				// For R3, the automation is complete after apply. Re-enable controls.
+				if (isAutomationRunning && latestRiskMessage?.currentRiskLevel === "R3") {
+					setStatus("Terraform apply complete. R3 Automation finished.");
+					setIsAutomationRunning(false);
+				}
+
 				// If automation is running for R4+, continue to the migrate step
 				if (isAutomationRunning && latestRiskMessage?.currentRiskLevel && latestRiskMessage.currentRiskLevel >= "R4") {
 					// Open the migration view first
