@@ -755,7 +755,7 @@ function HomePageClient() {
 		setLoading(true);
 		abortControllerRef.current = new AbortController();
 		
-		let statusSetter = setStatus;
+		let statusSetter: (status: string) => void = setStatus;
 		if (endpoint === 'migrate') {
 			setMigrationStatus(""); // Clear previous status
 			statusSetter = (newStatus: string) => {
