@@ -678,8 +678,14 @@ function HomePageClient() {
 
 			// R4: R3 actions + Migrate
 			if (riskLevel >= "R4" && lastCompletedIndex < stepsOrder.indexOf("migrate")) {
-				setLoading(true);
+				// Open the migration view first and wait, consistent with the chained workflow.
+				setViewMode('migrate');
+				setStatus("App Migration view opened. Starting data migration in 7 seconds...");
+				setLoading(false); // Turn off loader during the 7-second informational wait.
+				await delay(7000);
+
 				setStatus("Step 6: Starting application migration...");
+				setLoading(true); // Turn loader on for the migration process.
 				await apiCall("migrate", "POST");
 				const migrateStatus = await pollStatus(
 					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/migrate/status`,
@@ -698,9 +704,9 @@ function HomePageClient() {
 			// --- NEW: Handle R4 -> R5 escalation after migration is already complete ---
 			if (riskLevel === "R5" && lastCompletedStep === "migrate") {
 				logToServer("[LOG] AUTOMATION WORKFLOW: Detected R5 escalation after R4 migration. Initiating automatic cutover.");
-				setStatus("R5 Escalation: Waiting 45s before automatic cutover...");
+				setStatus("R5 Escalation: Waiting 30s before automatic cutover...");
 				setLoading(false); // Loader off during the wait
-				await delay(45000);
+				await delay(30000);
 
 				setLoading(true); // Loader on for the cutover
 				await handleManualAction("cutover", "POST", undefined, true, "Completed", 10 * 60 * 1000);
