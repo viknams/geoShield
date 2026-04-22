@@ -578,14 +578,29 @@ function HomePageClient() {
 			const stepsOrder = ["auth", "discover", "filter", "plan", "apply", "migrate", "cutover"];
 			const lastCompletedIndex = stepsOrder.indexOf(lastCompletedStep);
 
+			// --- R4 -> R5 Escalation: Only run cutover ---
+			if (riskLevel === "R5" && lastCompletedStep === "migrate") {
+				logToServer("[LOG] AUTOMATION WORKFLOW: Detected R5 escalation after R4 migration. Initiating automatic cutover.");
+				setStatus("R5 Escalation: Waiting 30s before automatic cutover...");
+				setLoading(false); // Loader off during the wait
+				await delay(30000);
+
+				// Loader on for the cutover
+				await handleManualAction("cutover", "POST", undefined, true, "CUTOVER: Completed", 10 * 60 * 1000);
+				setAutomationStepCompleted("cutover");
+				setStatus("Automatic cutover for R5 complete.");
+				setLoading(false);
+				return; // Stop the sequence here, as the only required action is complete.
+			}
+
 			// R0: Auth
 			if (riskLevel >= "R0" && lastCompletedIndex < stepsOrder.indexOf("auth")) {
 				setLoading(true);
 				setStatus("Step 1: Authenticating...");
 				await apiCall("auth", "POST");
-				const authStatus = await pollStatus(
-					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/auth/status`,
-					"Completed",
+				const authStatus = await pollStatus( // Polls the new generic status endpoint
+					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/status`,
+					"AUTH: Completed",
 					45 * 1000,
 					setStatus,
 				);
@@ -603,9 +618,9 @@ function HomePageClient() {
 				setLoading(true);
 				setStatus("Step 2: Discovering resources...");
 				await apiCall("discover", "POST");
-				const discoveryStatus = await pollStatus(
-					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/discover/status`,
-					"Discovery completed",
+				const discoveryStatus = await pollStatus( // Polls the new generic status endpoint
+					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/status`,
+					"DISCOVERY: Discovery completed",
 					5 * 60 * 1000, // 5 minute timeout for discovery
 					setStatus,
 				);
@@ -627,13 +642,13 @@ function HomePageClient() {
 				const initialFilterResponse = await apiCall("filter", "POST");
 
 				let filterStatus = "";
-				// If the initial call returns a status (e.g., from cache), use it. Otherwise, poll.
-				if (initialFilterResponse?.status?.includes("Filter process completed")) {
+				// If the initial call returns a status from cache, use it. Otherwise, poll.
+				if (initialFilterResponse?.status?.includes("FILTER: Filter process completed (from cache)")) {
 					filterStatus = initialFilterResponse.status;
 				} else {
-					filterStatus = await pollStatus(
-						`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/filter/status`,
-						"Filter process completed", // More generic prefix to catch both cache and fresh runs
+					filterStatus = await pollStatus( // Polls the new generic status endpoint
+						`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/status`,
+						"FILTER: Filter process completed",
 						5 * 60 * 1000,
 						setStatus,
 					);
@@ -658,8 +673,8 @@ function HomePageClient() {
 				setLoading(true);
 				setStatus("Step 5: Applying Terraform plan...");
 				await apiCall("apply", "POST", { resources: resourcesToPlan, workspaceId: workspaceId });
-				const applyStatus = await pollStatus(
-					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/plan/status`, // Still polls plan status
+				const applyStatus = await pollStatus( // Polls the new generic status endpoint
+					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/status`,
 					"APPLY_COMPLETED::",
 					15 * 60 * 1000,
 					setStatus,
@@ -685,11 +700,11 @@ function HomePageClient() {
 				await delay(7000);
 
 				setStatus("Step 6: Starting application migration...");
-				setLoading(true); // Turn loader on for the migration process.
+				// Turn loader on for the migration process.
 				await apiCall("migrate", "POST");
-				const migrateStatus = await pollStatus(
-					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/migrate/status`,
-					"Completed",
+				const migrateStatus = await pollStatus( // Polls the new generic status endpoint
+					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/status`,
+					"MIGRATE: Completed",
 					2 * 60 * 60 * 1000,
 					setMigrationStatus,
 				);
@@ -701,20 +716,6 @@ function HomePageClient() {
 				setLoading(false);
 			}
 
-			// --- NEW: Handle R4 -> R5 escalation after migration is already complete ---
-			if (riskLevel === "R5" && lastCompletedStep === "migrate") {
-				logToServer("[LOG] AUTOMATION WORKFLOW: Detected R5 escalation after R4 migration. Initiating automatic cutover.");
-				setStatus("R5 Escalation: Waiting 30s before automatic cutover...");
-				setLoading(false); // Loader off during the wait
-				await delay(30000);
-
-				setLoading(true); // Loader on for the cutover
-				await handleManualAction("cutover", "POST", undefined, true, "Completed", 10 * 60 * 1000);
-				setAutomationStepCompleted("cutover");
-				setStatus("Automatic cutover for R5 complete.");
-				setLoading(false);
-				// End of the line for R5 automation
-			}
 			setStatus(`Automation completed for Risk Level ${riskLevel}.`);
 		} catch (error: any) {
 			// If any step fails, ensure the loader is turned off.
@@ -743,7 +744,7 @@ function HomePageClient() {
 			if (riskLevel >= "R2" && lastCompletedIndex < stepsOrder.indexOf("plan")) {
 				setStatus("Step 4: Generating Terraform plan...");
 				// The handleManualAction will now automatically chain to the 'apply' step if needed.
-				await handleManualAction("plan", "POST", { resources: resourcesToPlan, workspaceId: "" }, true, "COMPLETED::", 15 * 60 * 1000); 
+				await handleManualAction("plan", "POST", { resources: resourcesToPlan, workspaceId: "" }, true, "PLAN_COMPLETED::", 15 * 60 * 1000); 
 				setAutomationStepCompleted("plan");
 			}
 
@@ -799,13 +800,9 @@ function HomePageClient() {
 
 			// Step 2: Poll for completion if required
 			if (poll) {
-				// All terraform operations (plan, apply, destroy) use the same status endpoint
-				const statusEndpoint = (endpoint === 'plan' || endpoint === 'apply' || endpoint === 'destroy') 
-					? 'plan' 
-					: endpoint;
-
+				// All operations now use the same generic status endpoint
 				finalStatus = await pollStatus(
-					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/${statusEndpoint}/status`,
+					`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/gcp/status`,
 					completionPrefix,
 					timeout,
 					statusSetter
@@ -855,19 +852,28 @@ function HomePageClient() {
 				if (isAutomationRunning && latestRiskMessage?.currentRiskLevel === "R3") {
 					setStatus("Terraform apply complete. R3 Automation finished.");
 					setIsAutomationRunning(false);
+					
 				}
 
 				// If automation is running for R4+, continue to the migrate step
 				if (isAutomationRunning && latestRiskMessage?.currentRiskLevel && latestRiskMessage.currentRiskLevel >= "R4") {
 					// Open the migration view first
+					// Add the requested wait between apply and migrate
+					setStatus("Apply complete. Waiting 30s before migrating...");
+					setLoading(false); // Turn off loader during the delay
+					await delay(30000);
+
+
 					setViewMode('migrate');
 					setStatus("App Migration view opened. Starting data migration in 7 seconds...");
 					setLoading(false); // Turn off loader during the 7-second informational wait.
 					await delay(7000); // Wait for 7 seconds as requested
 
 					// Now, trigger the migration with a loader
-					setLoading(true);
-					await handleManualAction("migrate", "POST", undefined, true, "Migration Complete", 2 * 60 * 60 * 1000);
+
+					await handleManualAction("migrate", "POST", undefined, true, "MIGRATE: Completed", 2 * 60 * 60 * 1000);
+					setLoading(false);
+					setAutomationStepCompleted("migrate");
 				}
 			} else if (endpoint === 'migrate') {
 				if (finalStatus.includes("Migration Complete")) {
@@ -876,14 +882,17 @@ function HomePageClient() {
 
 					// Handle next steps for R4 and R5 automation after migration.
 					if (isAutomationRunning && latestRiskMessage?.currentRiskLevel === "R4") {
+						setLoading(false); // Explicitly turn off loader for the R4 pause.
 						setStatus("Migration complete. Please review and trigger Cutover manually.");
 						setIsAutomationRunning(false); // Stop automation to allow manual action.
 					} else if (isAutomationRunning && latestRiskMessage?.currentRiskLevel === "R5") {
 						setStatus("Migration complete. Waiting 45s before automatic cutover...");
 						await delay(45000);
-						setLoading(true); // Show loader for the cutover step
-						await handleManualAction("cutover", "POST", undefined, true, "Cutover complete", 10 * 60 * 1000);
+						setLoading(true); // Show loader for the cutover step. The prefix must match the manual button.
+						await handleManualAction("cutover", "POST", undefined, true, "CUTOVER: Completed", 10 * 60 * 1000);
 						setAutomationStepCompleted("cutover");
+						setIsAutomationRunning(false); // R5 automation is now complete.
+						setLoading(false); // Explicitly turn off the loader.
 					}
 				}
 			}
@@ -1275,7 +1284,7 @@ function HomePageClient() {
 
 					{workflowMode === 'manual' && (<div className="grid grid-cols-2 lg:grid-cols-5 gap-4 animate-in fade-in duration-300">
 						<button
-							onClick={() => handleManualAction("auth", "POST", undefined, true, "Completed", 45 * 1000)}
+							onClick={() => handleManualAction("auth", "POST", undefined, true, "AUTH: Completed", 45 * 1000)}
 							disabled={loading || isAutomationRunning}
 							className="group relative overflow-hidden bg-orange-500 hover:bg-orange-600 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-orange-200 active:scale-95 disabled:opacity-50"
 						>
@@ -1290,7 +1299,7 @@ function HomePageClient() {
 							</span>
 						</button>
 						<button
-							onClick={() => handleManualAction("discover", "POST", undefined, true, "Discovery completed", 5 * 60 * 1000)}
+							onClick={() => handleManualAction("discover", "POST", undefined, true, "DISCOVERY: Discovery completed", 5 * 60 * 1000)}
 							disabled={loading || isAutomationRunning}
 							className="group relative overflow-hidden bg-blue-600 hover:bg-blue-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-blue-200 active:scale-95 disabled:opacity-50"
 						>
@@ -1312,7 +1321,7 @@ function HomePageClient() {
 							</span>
 						</button>
 						<button
-							onClick={() => handleManualAction("filter", "POST", undefined, true, "Filter process completed", 5 * 60 * 1000)}
+							onClick={() => handleManualAction("filter", "POST", undefined, true, "FILTER: Filter process completed", 5 * 60 * 1000)}
 							disabled={loading || isAutomationRunning}
 							className="group relative overflow-hidden bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-emerald-200 active:scale-95 disabled:opacity-50"
 						>
@@ -1333,7 +1342,7 @@ function HomePageClient() {
 							</span>
 						</button>
 						<button
-							onClick={() => handleManualAction("plan", "POST", { resources: resourcesToPlan, workspaceId: "" }, true, "COMPLETED::", 15 * 60 * 1000)}
+							onClick={() => handleManualAction("plan", "POST", { resources: resourcesToPlan, workspaceId: "" }, true, "PLAN_COMPLETED::", 15 * 60 * 1000)}
 							disabled={loading || isAutomationRunning || Object.keys(resourcesToPlan).length === 0}
 							className="group relative overflow-hidden bg-purple-600 hover:bg-purple-700 text-white px-6 py-4 rounded-xl font-bold transition-all hover:shadow-lg hover:shadow-purple-200 active:scale-95 disabled:opacity-50"
 						>
@@ -1439,7 +1448,7 @@ function HomePageClient() {
 									</p>
 								)}
 								<button
-									onClick={() => handleManualAction("discover", "POST", undefined, true, "Discovery completed", 5 * 60 * 1000, "&force_refresh=true")}
+									onClick={() => handleManualAction("discover", "POST", undefined, true, "DISCOVERY: Discovery completed", 5 * 60 * 1000, "&force_refresh=true")}
 									disabled={loading || isAutomationRunning}
 									className="group relative overflow-hidden bg-sky-600 hover:bg-sky-700 text-white px-4 py-2 rounded-lg font-bold transition-all hover:shadow-lg hover:shadow-sky-200 active:scale-95 disabled:opacity-50 text-xs"
 									title="Force a new discovery run, ignoring any cached data."
@@ -1560,9 +1569,9 @@ function HomePageClient() {
 								<div className="flex items-center gap-2 pt-1">
 									<button
 										onClick={async () => {
-											// A true force refresh must first re-discover, then re-filter.
-											await handleManualAction("discover", "POST", undefined, true, "Discovery completed", 5 * 60 * 1000, "&force_refresh=true");
-											await handleManualAction("filter", "POST", undefined, true, "Filter process completed", 5 * 60 * 1000, "&force_refresh=true");
+											// A true force refresh must first re-discover, then re-filter. Prefixes must match manual buttons.
+											await handleManualAction("discover", "POST", undefined, true, "DISCOVERY: Discovery completed", 5 * 60 * 1000, "&force_refresh=true");
+											await handleManualAction("filter", "POST", undefined, true, "FILTER: Filter process completed", 5 * 60 * 1000, "&force_refresh=true");
 										}}
 										disabled={loading || (isAutomationRunning && !status.includes("Please review"))}
 										className="group relative overflow-hidden bg-sky-600 hover:bg-sky-700 text-white px-6 py-2 rounded-lg font-bold transition-all hover:shadow-lg hover:shadow-sky-200 active:scale-95 disabled:opacity-50 text-xs whitespace-nowrap"
@@ -2085,7 +2094,7 @@ function HomePageClient() {
 												<p className="text-xs text-slate-500">Back up and restore the database to the new environment.</p>
 											</div>
 											<button
-												onClick={() => handleManualAction("migrate", "POST", undefined, true, "Completed", 2 * 60 * 60 * 1000)}
+												onClick={() => handleManualAction("migrate", "POST", undefined, true, "MIGRATE: Completed", 2 * 60 * 60 * 1000)}
 												disabled={loading || isAutomationRunning}
 												className="group relative overflow-hidden bg-teal-600 hover:bg-teal-700 text-white px-4 py-2 rounded-lg font-bold transition-all text-sm"
 											>
@@ -2103,7 +2112,7 @@ function HomePageClient() {
 												<p className="text-xs text-slate-500">Point the load balancer to the new virtual machine endpoint.</p>
 											</div>
 											<button
-												onClick={() => handleManualAction("cutover", "POST", undefined, true, "Completed", 10 * 60 * 1000)}
+												onClick={() => handleManualAction("cutover", "POST", undefined, true, "CUTOVER: Completed", 10 * 60 * 1000)}
 												disabled={loading || isAutomationRunning}
 												className="group relative overflow-hidden bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg font-bold transition-all text-sm"
 											>

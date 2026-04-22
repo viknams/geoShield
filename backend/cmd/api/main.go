@@ -119,19 +119,15 @@ func main() {
 	v1.Use(h.AuthMiddleware())
 	{
 		// Authentication
-		v1.POST("/auth", h.AuthGCP)
-		v1.GET("/auth/status", h.GetAuthStatus)
+		v1.POST("/auth", h.AuthGCP) // This starts the auth process
 
 		// Discovery and Filtering
 		v1.POST("/discover", h.DiscoverGCP)
-		v1.GET("/discover/status", h.GetDiscoveryStatus)
 		v1.GET("/resources", h.ListResources)
 		v1.GET("/resources/active", h.ListActiveResources)
-		v1.GET("/filter/status", h.GetFilterStatus)
 		v1.POST("/filter", h.FilterGCP)
 
 		// Terraform Plan & Apply
-		v1.GET("/plan/status", h.GetPlanStatus)
 		v1.POST("/plan", h.PlanTerraform)
 		v1.POST("/plan/cache/clear", h.ClearPlanCache)
 		v1.POST("/apply", h.ApplyTerraform)
@@ -147,14 +143,15 @@ func main() {
 
 		// Migration
 		v1.POST("/migrate", h.AppMigration)
-		v1.GET("/migrate/status", h.GetMigrationStatus)
 
 		// Cutover
 		v1.POST("/cutover", h.Cutover)
-		v1.GET("/cutover/status", h.GetCutoverStatus)
 
 		// Client-side logging
 		v1.POST("/log", h.LogFrontendMessage)
+
+		// Unified status endpoint for all long-running operations
+		v1.GET("/status", h.GetOperationStatus)
 	}
 	// This endpoint needs to be outside the auth group if it's part of the initial page load before API key is entered.
 	// For now, let's keep it inside and ensure API key is always present.

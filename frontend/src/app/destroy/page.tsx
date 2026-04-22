@@ -133,12 +133,11 @@ function DestroyPage() {
 					}
 					const data = await res.json();
 
-					if (data.status.startsWith("COMPLETED::") || data.status.startsWith("DESTROY_COMPLETED::")) {
+					if (data.status.startsWith("DESTROY_PLAN_COMPLETED::") || data.status.startsWith("DESTROY_COMPLETED::")) {
 						const parts = data.status.split("::");
 						const newWorkspaceId = parts[1];
 						const finalPlanOutput = parts[2];
 						setWorkspaceId(newWorkspaceId);
-						setPlanOutput(finalPlanOutput);
 
 						if (data.status.startsWith("DESTROY_COMPLETED::")) {
 							setDestroyOutput(finalPlanOutput); // Store final destroy output
@@ -146,6 +145,7 @@ function DestroyPage() {
 						} else {
 							setStatus("Destroy plan generated successfully.");
 						}
+						setPlanOutput(finalPlanOutput);
 						setLoading(false);
 						setIsPlanPolling(false);
 					} else {

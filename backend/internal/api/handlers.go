@@ -75,13 +75,9 @@ type APIHandler struct {
 	Users                        map[string]string // Map of API Key -> UserID
 
 	// Track auth status
-	mu              sync.RWMutex
-	authStatus      string
-	discoveryStatus string
-	filterStatus    string
-	planStatus      string
-	migrationStatus string
-	cutoverStatus   string
+	mu sync.RWMutex
+	// Unified status for all long-running operations to prevent race conditions and stale data
+	operationStatus string
 
 	// For Cancellation
 	runningCmdLock sync.Mutex
@@ -147,7 +143,7 @@ func (h *APIHandler) AuthGCP(c *gin.Context) {
 	// 2. GOOGLE_APPLICATION_CREDENTIALS: Standard ADC file path
 	// 3. ServiceAccountJSON: Custom JSON content
 	if os.Getenv("K_SERVICE") != "" || os.Getenv("GOOGLE_APPLICATION_CREDENTIALS") != "" || h.ServiceAccountJSON != "" {
-		h.authStatus = "Completed"
+		h.operationStatus = "AUTH: Completed"
 		log.Printf("Detected environment-based authentication (Cloud Run Metadata, ADC, or JSON). Browser login skipped.")
 		c.JSON(http.StatusOK, gin.H{
 			"status": "Authenticated via environment. Browser login skipped.",
@@ -156,7 +152,7 @@ func (h *APIHandler) AuthGCP(c *gin.Context) {
 	}
 
 	if impersonate != "" {
-		h.authStatus = "Completed"
+		h.operationStatus = "AUTH: Completed"
 		log.Printf("Impersonation active for %s. Skipping browser login.", impersonate)
 		c.JSON(http.StatusOK, gin.H{
 			"status": fmt.Sprintf("Impersonation active for %s. Browser login skipped.", impersonate),
@@ -164,7 +160,7 @@ func (h *APIHandler) AuthGCP(c *gin.Context) {
 		return
 	}
 
-	h.authStatus = "Pending"
+	h.operationStatus = "AUTH: Pending"
 
 	// Trigger gcloud auth in a separate process
 	cmd := exec.Command("gcloud", "auth", "application-default", "login", "--project", projectID)
@@ -174,49 +170,20 @@ func (h *APIHandler) AuthGCP(c *gin.Context) {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		if err != nil {
-			h.authStatus = fmt.Sprintf("Failed: %v", err)
+			h.operationStatus = fmt.Sprintf("AUTH: Failed: %v", err)
 		} else {
-			h.authStatus = "Completed"
+			h.operationStatus = "AUTH: Completed"
 		}
 	}()
 
 	c.JSON(http.StatusOK, gin.H{"status": "Authentication started. Check your browser."})
 }
 
-func (h *APIHandler) GetAuthStatus(c *gin.Context) {
+// GetOperationStatus provides a single endpoint for the frontend to poll for any long-running task.
+func (h *APIHandler) GetOperationStatus(c *gin.Context) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	c.JSON(http.StatusOK, gin.H{"status": h.authStatus})
-}
-
-func (h *APIHandler) GetDiscoveryStatus(c *gin.Context) {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	c.JSON(http.StatusOK, gin.H{"status": h.discoveryStatus})
-}
-
-func (h *APIHandler) GetFilterStatus(c *gin.Context) {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	c.JSON(http.StatusOK, gin.H{"status": h.filterStatus})
-}
-
-func (h *APIHandler) GetPlanStatus(c *gin.Context) {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	c.JSON(http.StatusOK, gin.H{"status": h.planStatus})
-}
-
-func (h *APIHandler) GetMigrationStatus(c *gin.Context) {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	c.JSON(http.StatusOK, gin.H{"status": h.migrationStatus})
-}
-
-func (h *APIHandler) GetCutoverStatus(c *gin.Context) {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	c.JSON(http.StatusOK, gin.H{"status": h.cutoverStatus})
+	c.JSON(http.StatusOK, gin.H{"status": h.operationStatus})
 }
 
 func (h *APIHandler) CancelOperation(c *gin.Context) {
@@ -226,12 +193,7 @@ func (h *APIHandler) CancelOperation(c *gin.Context) {
 		h.cancelFunc()
 		h.cancelFunc = nil // Prevent multiple calls
 
-		// Update all statuses to reflect cancellation
-		h.planStatus = "Operation cancelled by user."
-		h.discoveryStatus = "Operation cancelled by user."
-		h.filterStatus = "Operation cancelled by user."
-		h.migrationStatus = "Operation cancelled by user."
-		h.cutoverStatus = "Operation cancelled by user."
+		h.operationStatus = "CANCELLED: Operation cancelled by user."
 		h.mu.Unlock()
 
 		c.JSON(http.StatusOK, gin.H{"status": "Cancellation signal sent successfully."})
@@ -263,11 +225,7 @@ func (h *APIHandler) CancelOperation(c *gin.Context) {
 
 		// Update the status that the frontend polls to give immediate feedback
 		h.mu.Lock()
-		h.planStatus = "Operation cancelled by user."
-		h.discoveryStatus = "Operation cancelled by user."
-		h.filterStatus = "Operation cancelled by user."
-		h.migrationStatus = "Operation cancelled by user."
-		h.cutoverStatus = "Operation cancelled by user."
+		h.operationStatus = "CANCELLED: Operation cancelled by user."
 		h.mu.Unlock()
 
 		c.JSON(http.StatusOK, gin.H{"status": "Cancellation signal sent successfully."})
@@ -317,7 +275,7 @@ func (h *APIHandler) DiscoverGCP(c *gin.Context) {
 				if cacheIsValid && hasDataFiles {
 					log.Printf("Serving discovery for project %s from cache (run by %s at %s).", projectID, metadata.UserID, metadata.LastRunAt)
 					h.mu.Lock()
-					h.discoveryStatus = "Discovery completed (from cache)."
+					h.operationStatus = "DISCOVERY: Discovery completed (from cache)."
 					h.mu.Unlock()
 					c.JSON(http.StatusOK, gin.H{"status": "Discovery process started."})
 					return
@@ -333,7 +291,7 @@ func (h *APIHandler) DiscoverGCP(c *gin.Context) {
 	}
 
 	h.mu.Lock()
-	h.discoveryStatus = "Starting discovery process..."
+	h.operationStatus = "DISCOVERY: Starting discovery process..."
 	h.mu.Unlock()
 
 	// --- Cleanup old discovery files ---
@@ -368,7 +326,7 @@ func (h *APIHandler) DiscoverGCP(c *gin.Context) {
 		svc, err := discovery.NewDiscoveryService(ctx, projectID, impersonate, h.ServiceAccountJSON)
 		if err != nil {
 			h.mu.Lock()
-			h.discoveryStatus = fmt.Sprintf("Failed to init discovery: %v", err)
+			h.operationStatus = fmt.Sprintf("DISCOVERY: Failed to init discovery: %v", err)
 			h.mu.Unlock()
 			return
 		}
@@ -380,18 +338,18 @@ func (h *APIHandler) DiscoverGCP(c *gin.Context) {
 			if ctx.Err() == context.Canceled {
 				log.Println("Discovery operation was cancelled.")
 				h.mu.Lock()
-				h.discoveryStatus = "Discovery cancelled by user."
+				h.operationStatus = "DISCOVERY: Discovery cancelled by user."
 				h.mu.Unlock()
 			} else {
 				h.mu.Lock()
-				h.discoveryStatus = fmt.Sprintf("Discovery failed: %v", err)
+				h.operationStatus = fmt.Sprintf("DISCOVERY: Discovery failed: %v", err)
 				h.mu.Unlock()
 			}
 			return
 		}
 
 		h.mu.Lock()
-		h.discoveryStatus = "Discovery completed. CSV files updated."
+		h.operationStatus = "DISCOVERY: Discovery completed. CSV files updated."
 		h.mu.Unlock()
 
 		// Write metadata file on successful completion
@@ -520,7 +478,7 @@ func (h *APIHandler) FilterGCP(c *gin.Context) {
 				if cacheIsValid && hasDataFiles {
 					log.Printf("Serving filter for project %s for user %s from cache.", projectID, userID)
 					h.mu.Lock()
-					h.filterStatus = "Filter process completed (from cache)."
+					h.operationStatus = "FILTER: Filter process completed (from cache)."
 					h.mu.Unlock()
 					c.JSON(http.StatusOK, gin.H{"status": "Filter process started."})
 					return
@@ -535,7 +493,7 @@ func (h *APIHandler) FilterGCP(c *gin.Context) {
 	}
 
 	h.mu.Lock()
-	h.filterStatus = "Starting filter process..."
+	h.operationStatus = "FILTER: Starting filter process..."
 	h.mu.Unlock()
 
 	// --- Cleanup old filter files ---
@@ -553,7 +511,7 @@ func (h *APIHandler) FilterGCP(c *gin.Context) {
 		svc, err := discovery.NewFilterService(ctx, projectID, impersonate, h.ServiceAccountJSON)
 		if err != nil {
 			h.mu.Lock()
-			h.filterStatus = fmt.Sprintf("Failed to init filter service: %v", err)
+			h.operationStatus = fmt.Sprintf("FILTER: Failed to init filter service: %v", err)
 			h.mu.Unlock()
 			return
 		}
@@ -564,11 +522,11 @@ func (h *APIHandler) FilterGCP(c *gin.Context) {
 
 		if err := svc.FilterAndConsolidate(ctx, rawDataDir, projectDataDir, func(status string) {
 			h.mu.Lock()
-			h.filterStatus = status
+			h.operationStatus = "FILTER: " + status
 			h.mu.Unlock()
 		}); err != nil {
 			h.mu.Lock()
-			h.filterStatus = fmt.Sprintf("Filtering failed: %v", err)
+			h.operationStatus = fmt.Sprintf("FILTER: Filtering failed: %v", err)
 			h.mu.Unlock()
 		} else {
 			// On success, write the results to the user's cache
@@ -1062,8 +1020,8 @@ func (h *APIHandler) PlanTerraform(c *gin.Context) {
 					// Workspace exists, so the cache is valid.
 					log.Printf("CACHE HIT: Serving plan for project %s from persistent backend cache. Workspace '%s' is valid.", projectID, cachedEntry.WorkspaceID)
 					h.mu.Lock()
-					// Immediately set the status to completed with the cached data
-					h.planStatus = fmt.Sprintf("COMPLETED::%s::%s", cachedEntry.WorkspaceID, cachedEntry.PlanOutput)
+					// Immediately set the status to completed with the cached data, prefixed for the operation type
+					h.operationStatus = fmt.Sprintf("PLAN_COMPLETED::%s::%s", cachedEntry.WorkspaceID, cachedEntry.PlanOutput)
 					h.mu.Unlock()
 					c.JSON(http.StatusOK, gin.H{"status": "Plan process started (from cache)."})
 					return
@@ -1081,7 +1039,7 @@ func (h *APIHandler) PlanTerraform(c *gin.Context) {
 	// --- END PERSISTENT BACKEND CACHING LOGIC ---
 
 	h.mu.Lock()
-	h.planStatus = "Starting plan process..."
+	h.operationStatus = "PLAN: Starting plan process..."
 	h.mu.Unlock()
 
 	go func() {
@@ -1089,7 +1047,7 @@ func (h *APIHandler) PlanTerraform(c *gin.Context) {
 		log.Printf("Successfully received and parsed plan payload for %d resource types.", len(payload.Resources))
 		if projectID == "" {
 			h.mu.Lock()
-			h.planStatus = "Error: project ID is required"
+			h.operationStatus = "PLAN: Error: project ID is required"
 			h.mu.Unlock()
 			return
 		}
@@ -1100,7 +1058,7 @@ func (h *APIHandler) PlanTerraform(c *gin.Context) {
 		log.Printf("Creating ephemeral workspace: %s", workspaceDir)
 		if err := os.MkdirAll(workspaceDir, 0755); err != nil {
 			log.Printf("Error creating ephemeral workspace: %v", err)
-			h.planStatus = fmt.Sprintf("Error: Failed to create workspace: %v", err)
+			h.operationStatus = fmt.Sprintf("PLAN: Error: Failed to create workspace: %v", err)
 			return
 		}
 
@@ -1138,7 +1096,7 @@ func (h *APIHandler) PlanTerraform(c *gin.Context) {
 		if err != nil {
 			log.Printf("Error generating terraform code: %v", err)
 			h.mu.Lock()
-			h.planStatus = fmt.Sprintf("Error generating terraform code: %v", err)
+			h.operationStatus = fmt.Sprintf("PLAN: Error generating terraform code: %v", err)
 			h.mu.Unlock()
 			return
 		}
@@ -1154,7 +1112,7 @@ func (h *APIHandler) PlanTerraform(c *gin.Context) {
 
 			status := fmt.Sprintf("[%d/%d] Initializing Terraform for %s: %s", i+1, len(config.Resources), displayType, res.Name)
 			h.mu.Lock()
-			h.planStatus = status
+			h.operationStatus = "PLAN: " + status
 			h.mu.Unlock()
 			log.Println(status)
 
@@ -1168,14 +1126,14 @@ func (h *APIHandler) PlanTerraform(c *gin.Context) {
 				// If init fails (e.g., due to cancellation), stop the entire plan process.
 				log.Printf("Stopping plan process due to init failure on %s: %v", res.Name, err)
 				h.mu.Lock()
-				h.planStatus = fmt.Sprintf("Plan failed during init for %s: %v", res.Name, err)
+				h.operationStatus = fmt.Sprintf("PLAN: Plan failed during init for %s: %v", res.Name, err)
 				h.mu.Unlock()
 				return
 			}
 
 			status = fmt.Sprintf("[%d/%d] Generating Terraform plan file for %s: %s", i+1, len(config.Resources), displayType, res.Name)
 			h.mu.Lock()
-			h.planStatus = status
+			h.operationStatus = "PLAN: " + status
 			h.mu.Unlock()
 			log.Println(status)
 
@@ -1189,7 +1147,7 @@ func (h *APIHandler) PlanTerraform(c *gin.Context) {
 				log.Printf("Stopping plan process due to plan failure on %s: %v", res.Name, err)
 				// Set the status to the full output of the failed command for detailed UI feedback.
 				h.mu.Lock()
-				h.planStatus = fmt.Sprintf("Plan failed for %s. Error: %s", res.Name, planOutput)
+				h.operationStatus = fmt.Sprintf("PLAN: Plan failed for %s. Error: %s", res.Name, planOutput)
 				h.mu.Unlock()
 				return
 			}
@@ -1211,7 +1169,7 @@ func (h *APIHandler) PlanTerraform(c *gin.Context) {
 
 		log.Printf("Completed planning for %d resources.", len(config.Resources))
 		h.mu.Lock()
-		h.planStatus = fmt.Sprintf("COMPLETED::%s::%s", runID, finalPlanOutput)
+		h.operationStatus = fmt.Sprintf("PLAN_COMPLETED::%s::%s", runID, finalPlanOutput)
 		h.mu.Unlock()
 
 		// --- BACKEND CACHE SET ---
@@ -1261,7 +1219,7 @@ func (h *APIHandler) ApplyTerraform(c *gin.Context) {
 		ctx := context.Background()
 		client, err := storage.NewClient(ctx)
 		if err != nil {
-			h.planStatus = fmt.Sprintf("Error: failed to create storage client: %v", err)
+			h.operationStatus = fmt.Sprintf("APPLY: Error: failed to create storage client: %v", err)
 			return
 		}
 		defer client.Close()
@@ -1270,7 +1228,7 @@ func (h *APIHandler) ApplyTerraform(c *gin.Context) {
 		workspaceDir := filepath.Join(h.OutputDir, "run-"+payload.WorkspaceID)
 		log.Printf("Using existing workspace for apply: %s", workspaceDir)
 		if _, err := os.Stat(workspaceDir); os.IsNotExist(err) {
-			h.planStatus = "Error: Workspace not found. It may have expired or been deleted. Please generate a new plan."
+			h.operationStatus = "APPLY: Error: Workspace not found. It may have expired or been deleted. Please generate a new plan."
 			return
 		}
 
@@ -1325,7 +1283,7 @@ func (h *APIHandler) ApplyTerraform(c *gin.Context) {
 			status := fmt.Sprintf("[%d/%d] Applying Terraform plan for %s: %s", i+1, len(config.Resources), displayType, res.Name)
 			log.Println(status)
 			h.mu.Lock()
-			h.planStatus = status
+			h.operationStatus = "APPLY: " + status
 			h.mu.Unlock()
 
 			applyCmd := exec.CommandContext(ctx, "terraform", "apply", "-no-color", "-auto-approve", planFilePath)
@@ -1396,7 +1354,7 @@ func (h *APIHandler) ApplyTerraform(c *gin.Context) {
 		}
 
 		h.mu.Lock()
-		h.planStatus = fmt.Sprintf("APPLY_COMPLETED::%s", combinedOutput)
+		h.operationStatus = fmt.Sprintf("APPLY_COMPLETED::%s", combinedOutput)
 		h.mu.Unlock()
 	}()
 
@@ -1485,7 +1443,7 @@ func (h *APIHandler) runCommandAndStreamStatus(cmd *exec.Cmd, linePrefix string,
 
 		// Update the shared status for the frontend to poll
 		h.mu.Lock()
-		h.planStatus = linePrefix + line
+		h.operationStatus = linePrefix + line
 		h.mu.Unlock()
 	}
 
@@ -1725,7 +1683,7 @@ func (h *APIHandler) PlanDestroyTerraform(c *gin.Context) {
 	}
 
 	h.mu.Lock()
-	h.planStatus = "Starting destroy plan process..."
+	h.operationStatus = "DESTROY_PLAN: Starting destroy plan process..."
 	h.mu.Unlock()
 
 	go func() {
@@ -1736,7 +1694,7 @@ func (h *APIHandler) PlanDestroyTerraform(c *gin.Context) {
 		log.Printf("Creating ephemeral workspace for destroy plan: %s", workspaceDir)
 		if err := os.MkdirAll(workspaceDir, 0755); err != nil {
 			log.Printf("Error creating ephemeral workspace for destroy plan: %v", err)
-			h.planStatus = fmt.Sprintf("Error: Failed to create workspace: %v", err)
+			h.operationStatus = fmt.Sprintf("DESTROY_PLAN: Error: Failed to create workspace: %v", err)
 			return
 		}
 
@@ -1751,7 +1709,7 @@ func (h *APIHandler) PlanDestroyTerraform(c *gin.Context) {
 
 		client, err := storage.NewClient(ctx)
 		if err != nil {
-			h.planStatus = fmt.Sprintf("Error: failed to create storage client: %v", err)
+			h.operationStatus = fmt.Sprintf("DESTROY_PLAN: Error: failed to create storage client: %v", err)
 			return
 		}
 		defer client.Close()
@@ -1796,7 +1754,7 @@ func (h *APIHandler) PlanDestroyTerraform(c *gin.Context) {
 			status := fmt.Sprintf("[%d/%d] Initializing Terraform for destroy plan on %s: %s", i+1, len(config.Resources), displayType, res.Name)
 			log.Println(status)
 			h.mu.Lock()
-			h.planStatus = status
+			h.operationStatus = "DESTROY_PLAN: " + status
 			h.mu.Unlock()
 
 			prefix := filepath.Join(config.FolderName, res.Type, res.Name)
@@ -1825,7 +1783,7 @@ func (h *APIHandler) PlanDestroyTerraform(c *gin.Context) {
 
 		log.Printf("Completed destroy planning for %d resources.", len(config.Resources))
 		h.mu.Lock()
-		h.planStatus = fmt.Sprintf("COMPLETED::%s::%s", runID, finalPlanOutput)
+		h.operationStatus = fmt.Sprintf("DESTROY_PLAN_COMPLETED::%s::%s", runID, finalPlanOutput)
 		h.mu.Unlock()
 	}()
 
@@ -1865,7 +1823,7 @@ func (h *APIHandler) DestroyTerraform(c *gin.Context) {
 		ctx := context.Background()
 		client, err := storage.NewClient(ctx)
 		if err != nil {
-			h.planStatus = fmt.Sprintf("Error: failed to create storage client: %v", err)
+			h.operationStatus = fmt.Sprintf("DESTROY: Error: failed to create storage client: %v", err)
 			return
 		}
 		defer client.Close()
@@ -1874,7 +1832,7 @@ func (h *APIHandler) DestroyTerraform(c *gin.Context) {
 		workspaceDir := filepath.Join(h.OutputDir, "run-"+payload.WorkspaceID) // Use the workspace from the plan
 		log.Printf("Using existing workspace for destroy: %s", workspaceDir)
 		if _, err := os.Stat(workspaceDir); os.IsNotExist(err) {
-			h.planStatus = "Error: Workspace not found. It may have expired or been deleted. Please generate a new destroy plan."
+			h.operationStatus = "DESTROY: Error: Workspace not found. It may have expired or been deleted. Please generate a new destroy plan."
 			return
 		}
 
@@ -1909,7 +1867,7 @@ func (h *APIHandler) DestroyTerraform(c *gin.Context) {
 		if len(resourcesToProcess) == 0 {
 			combinedOutput = "No resources found in payload for destruction."
 			h.mu.Lock()
-			h.planStatus = fmt.Sprintf("DESTROY_COMPLETED::%s", combinedOutput)
+			h.operationStatus = fmt.Sprintf("DESTROY_COMPLETED::%s", combinedOutput)
 			h.mu.Unlock()
 			return
 		}
@@ -1924,7 +1882,7 @@ func (h *APIHandler) DestroyTerraform(c *gin.Context) {
 			status := fmt.Sprintf("[%d/%d] Initializing Terraform for destroy of %s: %s", i+1, len(resourcesToProcess), displayType, res.Name)
 			log.Println(status)
 			h.mu.Lock()
-			h.planStatus = status
+			h.operationStatus = "DESTROY: " + status
 			h.mu.Unlock()
 
 			// CRITICAL FIX: Run 'terraform init' before destroy to install modules.
@@ -1961,7 +1919,7 @@ func (h *APIHandler) DestroyTerraform(c *gin.Context) {
 
 		log.Printf("Completed destroying for %d resources.", len(resourcesToProcess))
 		h.mu.Lock()
-		h.planStatus = fmt.Sprintf("DESTROY_COMPLETED::%s", combinedOutput)
+		h.operationStatus = fmt.Sprintf("DESTROY_COMPLETED::%s", combinedOutput)
 		h.mu.Unlock()
 	}()
 
@@ -2282,7 +2240,7 @@ func (h *APIHandler) RemoveFromState(c *gin.Context) {
 
 func (h *APIHandler) AppMigration(c *gin.Context) {
 	h.mu.Lock()
-	h.migrationStatus = "Starting app migration script..."
+	h.operationStatus = "MIGRATE: Starting app migration script..."
 	h.mu.Unlock()
 
 	go func() {
@@ -2290,7 +2248,7 @@ func (h *APIHandler) AppMigration(c *gin.Context) {
 			errMsg := "Failed: App migration script path is not configured on the server."
 			log.Println("Error:", errMsg)
 			h.mu.Lock()
-			h.migrationStatus = errMsg
+			h.operationStatus = "MIGRATE: " + errMsg
 			h.mu.Unlock()
 			// We don't send a response here because the main function already did.
 			return
@@ -2312,9 +2270,9 @@ func (h *APIHandler) AppMigration(c *gin.Context) {
 		defer h.mu.Unlock()
 
 		if err != nil {
-			h.migrationStatus = fmt.Sprintf("Failed: %v\n%s", err, stderr.String())
+			h.operationStatus = fmt.Sprintf("MIGRATE: Failed: %v\n%s", err, stderr.String())
 		} else {
-			h.migrationStatus = fmt.Sprintf("Completed: %s", out.String())
+			h.operationStatus = fmt.Sprintf("MIGRATE: Completed: %s", out.String())
 		}
 	}()
 
@@ -2330,7 +2288,7 @@ func (h *APIHandler) AppMigration(c *gin.Context) {
 
 func (h *APIHandler) Cutover(c *gin.Context) {
 	h.mu.Lock()
-	h.cutoverStatus = "Starting cutover script..."
+	h.operationStatus = "CUTOVER: Starting cutover script..."
 	h.mu.Unlock()
 
 	go func() {
@@ -2338,7 +2296,7 @@ func (h *APIHandler) Cutover(c *gin.Context) {
 			errMsg := "Failed: Cutover script path is not configured on the server."
 			log.Println("Error:", errMsg)
 			h.mu.Lock()
-			h.cutoverStatus = errMsg
+			h.operationStatus = "CUTOVER: " + errMsg
 			h.mu.Unlock()
 			return
 		}
@@ -2359,9 +2317,9 @@ func (h *APIHandler) Cutover(c *gin.Context) {
 		defer h.mu.Unlock()
 
 		if err != nil {
-			h.cutoverStatus = fmt.Sprintf("Failed: %v\n%s", err, stderr.String())
+			h.operationStatus = fmt.Sprintf("CUTOVER: Failed: %v\n%s", err, stderr.String())
 		} else {
-			h.cutoverStatus = fmt.Sprintf("Completed: %s", out.String())
+			h.operationStatus = fmt.Sprintf("CUTOVER: Completed: %s", out.String())
 		}
 	}()
 
